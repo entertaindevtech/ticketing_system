@@ -1,0 +1,11 @@
+node_modules
+dist
+static-build
+static-html-prototype
+documentation
+backend/.venv
+backend/data
+backend/**/__pycache__
+backend/*.db
+.claude
+.git

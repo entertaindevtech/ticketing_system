@@ -1,118 +1,136 @@
-# MGM Dizzee World Ticketing Prototype — Handover (for Mohan)
+# MGM Dizzee World Ticketing — Technical Handover
 
-Date: 22 Nov 2026. Prepared for an upcoming management demonstration.
+Last updated 25 Nov 2026 (source consolidation). This replaces the 22 Nov version, which described a hand-patched `static-build/index.html` that is no longer maintained by hand.
 
-## 1. What this is
+The influencer and regional-sales backend is documented separately in [INFLUENCER-MODULE-HANDOVER.md](INFLUENCER-MODULE-HANDOVER.md).
 
-A conceptual demonstration prototype for MGM Dizzee World's proposed ticketing platform. It is **not** connected to any backend, payment gateway, or messaging service. All data lives in the browser (`localStorage`) and every transaction is simulated. Its purpose is to show the breadth of the proposed system — customer booking, counter sales, gate validation, and a full admin console — as one coherent, clickable experience.
-
-## 2. Exact location of the final prototype
+## 1. Architecture: one source of truth
 
 ```
-mgm-dizzee-ticketing/mgm-dizzee-ticketing/static-build/index.html
+src/                      React 19 + TypeScript + Vite + Tailwind v4   ← THE application (edit here)
+  store.ts                data model, pricing, scan validation, booking business rules (pure, unit-tested)
+  customer.tsx            customer booking site, My Bookings, cancellation request
+  admin.tsx               admin console (all modules except the two below)
+  counter.tsx             Admin › Counter Sale (reuses the customer booking steps)
+  influencers.tsx         Admin › Influencers & Regions (talks to backend/)
+  referral.ts             ?ref capture + booking-event outbox to backend/
+  staff.tsx, ui.tsx, charts.tsx, qr.ts
+backend/                  FastAPI + PostgreSQL — influencer attribution, commissions, analytics
+tests/store.test.ts       booking business-rule regression tests (npm test)
+scripts/build-static.mjs  produces static-build/index.html from src/
+static-build/index.html   GENERATED single-file build (double-click to open). Never edit by hand.
 ```
 
-This is a **single, self-contained HTML file**. It has no dependency on Node, npm, or a build step.
+**Decision: React/Vite `src/` is authoritative, and the single file is a build artefact.**
 
-Backups taken during development (do not demo from these):
-- `static-build/index.backup-before-counter-sale.html` — before the Counter Sale module was added.
-- `static-build/index.backup-before-feature-pass-2.html` — before this final feature pass (cancellation/refund/modification/entitlements/dashboard/history/notifications/audit).
+**What we found.**
+- Until this change, `src/` and `static-build/index.html` had diverged.
+- The static file was the original `src/` build plus ten hand-inserted patches written into minified code:
+  - the eight features below;
+  - Counter Sale;
+  - the Skip Add-ons button.
+- None of the ten existed in `src/`.
+- `src/` alone had the influencer module.
 
-## 3. How to open and demonstrate it
+**Why this direction.**
+- Editing minified JavaScript cannot be reviewed, type-checked or tested.
+- It had already introduced defects (§3).
+- Two hand-maintained copies would drift again.
 
-Double-click `static-build/index.html`, or open it with your browser's File → Open. It works offline. A top bar lets you switch between **Customer Booking**, **Admin Dashboard**, and **Staff Scanner** — these are three views of the same running application, sharing the same data.
+**How the single file is produced now.**
+- `npm run build:static` builds `src/` and inlines the JS, the CSS and every image into `static-build/index.html`.
+- The demo file still works offline by double-click, but it can no longer drift from the source.
+- The previous hand-patched file is retained in git history (commit `c5cfe30`). The two local `index.backup-*.html` files were never committed and are not part of the repo.
 
-## 4. Existing modules (already in the prototype before this pass)
+## 2. Features migrated from the old static build into `src/`
 
-- **Customer booking**: date selection → tickets/offers → add-ons → details → simulated payment → confirmation with real QR codes.
-- **Staff Scanner** (gate): staff login, QR/manual ticket validation, duplicate/invalid detection.
-- **Admin console**: Dashboard, Calendar, Tickets, Offers, Bookings, Payments, Customers, Entry, Reports, Staff, Settings. No login screen existed on Admin or Staff before — demo credentials only (below).
-- **Counter Sale** (added in the previous pass): a walk-in sale screen inside Admin, reusing the customer booking screens with a Cash/UPI/Card simulated checkout and a printable receipt.
+| Feature | Where now | Business rules |
+|---|---|---|
+| A. Customer cancellation request | Booking page → "Cancellation & refund" (reached from confirmation or **My Bookings**) | Paid, regular (non-offer) bookings only; at least 48 h before the visit; no tickets used; 10% fee; booking stays valid until reviewed |
+| B. Admin refund approve / reject | Admin › Payment Management › "Pending refund requests" | Approve cancels the booking and its unused tickets and marks the payment refunded. Reject asks for a reason, which the customer sees; the booking stays valid |
+| C. Booking modification | Admin › Booking Management › booking › "Modify booking" | Change date, ticket quantities and add-ons with a live re-price; the difference to collect or refund is shown and recorded |
+| D. Ticket entitlements | Admin › Ticket Management › Edit | Validity note, same-day re-entry, restrictions; now also **shown to customers** on the ticket card |
+| E. Capacity KPIs | Admin › Dashboard (second row) | Admitted / Expected / Remaining / Capacity today |
+| F. Customer booking history | Home page → "My Bookings" button | Lookup by mobile number |
+| G. Notification centre | Admin › Oversight › Notifications | Unread badge in the nav; mark read / mark all read |
+| H. Activity log | Admin › Oversight › Activity Log | Admin, customer and counter actions merged with gate scans; searchable |
+| Counter Sale | Admin › Counter Sale | Walk-in sale (Cash/UPI/Card simulated), printable QR receipt. **Never** referral-attributed |
+| Skip Add-ons | Customer booking, add-ons step | Goes straight to Customer Details without changing the cart |
 
-## 5. Newly implemented modules (this pass)
+All business rules live in `store.ts`:
+- `cancellationEligibility`
+- `requestCancellation`
+- `approveRefund`
+- `rejectRefund`
+- `adminCancel`
+- `modificationEligibility`
+- `modifyBooking`
+- `logEvent`
 
-| Feature | Where to find it |
+They are covered by `tests/store.test.ts`.
+
+## 3. Defects in the old static implementation, fixed during migration
+
+1. **Modification regenerated every ticket ID.** Customers' existing QR codes silently stopped working, and scan history was lost.
+   - Fix: existing tickets are kept per category. Only added tickets get new IDs; removed tickets are dropped.
+   - Modification is refused once any ticket has been used.
+2. **Modification dropped offer and coupon lines** and re-priced the booking at full price.
+   - Fix: bookings with offers or coupons cannot be modified, because offer pricing is tied to the original date. The reason is shown to the admin.
+3. **Modification accepted any date**, including closed and blackout dates.
+   - Fix: the date must be open (`dateStatus`).
+4. **Cancellation could be requested on unpaid (pending/failed) bookings.**
+   - Fix: only paid bookings are eligible.
+5. **The "Refunded" KPI counted pending and rejected requests as refunded money**, and the payments table labelled them "processed".
+   - Fix: only approved refunds count, and each row shows its real state.
+6. **A cancelled booking opened from history still said "Payment successful"**, and its tickets showed "Valid".
+   - Fix: a cancelled header is shown and each ticket shows its true status.
+7. **The capacity KPIs mixed sources.** "Admitted" counted scan events while "Remaining" counted ticket statuses, so the numbers did not add up.
+   - Fix: all four figures come from the same tickets (admitted + remaining = expected).
+   - Capacity now honours a per-date capacity set in Calendar Management before falling back to the default.
+8. **Rejecting a refund used a fixed reason.**
+   - Fix: the admin enters the reason.
+9. **Notifications and the log grew without bound in `localStorage`.**
+   - Fix: capped at 500 notifications and 2,000 log entries.
+
+**Correction to the 22 Nov handover.** It stated that checkout randomly simulated declines and timeouts. Neither version ever did; checkout always succeeded. A visible **"Simulate a declined payment"** link has now been added. A declined attempt creates no booking and nothing is sent for commission; the attempt is written to the Activity Log.
+
+## 4. Integration with the influencer module
+
+| Booking event | Effect on attribution and commission |
 |---|---|
-| **A. Customer cancellation request** | Open any confirmed customer booking's confirmation screen ("My Bookings" on the customer home screen finds past bookings by phone number) → "Cancellation & refund" card → "Request cancellation" |
-| **B. Admin refund approval** | Admin → **Payments** tab → "Pending refund requests" table → Approve / Reject |
-| **C. Booking modification** | Admin → **Bookings** → open a booking → "Modify booking" (change visit date, ticket quantities, add-ons; total recalculates live) |
-| **D. Ticket entitlement configuration** | Admin → **Tickets** → Edit a category → new fields: Validity period, Same-day re-entry allowed, Restrictions/conditions |
-| **E. Park operations / capacity** | Admin → **Dashboard** → new row: Admitted today, Expected today, Remaining to enter, Park capacity (demo value) |
-| **F. Customer booking history** | Customer home screen → floating "My Bookings" button (bottom-right) → search by the phone number used at booking |
-| **G. Notification centre** | Admin → **Notifications** (new tab, under "Oversight") |
-| **H. Activity/audit log** | Admin → **Activity Log** (new tab, under "Oversight") — combines admin actions and gate scans |
+| Online payment succeeds | `reportPaid` records every website booking with its region and source; a commission is created only if a live influencer attribution exists (influencer handover §0) |
+| Payment declined | Nothing is sent |
+| Admin "Cancel & refund" | Commission reversed |
+| Customer requests cancellation | No change. The booking is still valid; the commission stays pending |
+| Admin approves refund | Commission reversed |
+| Admin rejects refund | No change |
+| Admin modifies booking | The same commission is re-priced at its original rate (if pending); never duplicated |
+| Counter sale | Never sent, even if the staff browser holds a referral session |
 
-## 6. Recommended demonstration sequence
+Events go through a retrying `localStorage` outbox (`src/referral.ts`).
 
-1. **Book as a customer** (Customer Booking tab): pick a date, add tickets, pay (try it a couple of times to show the simulated success/decline/timeout states).
-2. On the confirmation screen, show the QR tickets, then **request a cancellation** on that booking — point out the 10%-fee calculation and the "pending" status.
-3. Switch to **Admin → Payments**: approve that refund request. Point out the status change.
-4. **Admin → Bookings**: open a different booking and **modify it** (change the date or add a ticket) — show the recalculated total.
-5. **Admin → Tickets**: edit a category and show the new validity/re-entry/restriction fields.
-6. **Admin → Dashboard**: show the new admitted/remaining/capacity row.
-7. **Admin → Notifications** and **Activity Log**: show that every action just performed left a trace.
-8. **Counter Sale**: make a walk-in sale, then show it appears in Admin → Bookings immediately.
-9. **Staff Scanner**: log in, scan one of today's tickets, then scan it again to show the duplicate-detection message.
-10. Use **Admin → Settings → (reset control, see §11)** if you need to start the demo fresh.
+## 5. How to run
 
-## 7. Demo credentials (already present in the prototype — none invented)
-
-Staff Scanner login (shared demo password for every account): **`mgm123`**
-- STF1024 — Arun Kumar — Main Gate A (active)
-- STF1031 — Priya Lakshmi — Main Gate B (active)
-- STF1045 — Mohammed Riyaz — Water Park Gate (active)
-- STF1052 — Deepa S — Fast Track Lane (**inactive** — useful for showing a login rejection)
-
-Admin and Counter Sale have **no login** — anyone opening the file reaches them directly. This was already true before this pass and was not changed.
-
-## 8. What is simulated vs. not connected to anything real
-
-Everything involving money, messaging, or authentication is simulated:
-- **Payments** (customer checkout and Counter Sale): random success/decline/timeout, no real gateway call.
-- **Refunds**: approving a refund only changes a status field; no money moves.
-- **Notifications**: the Notifications tab is populated by in-app events only — no real email/SMS/WhatsApp is sent.
-- **Staff/Admin login**: demo-only; there is no real authentication or access control. Any browser can reach any screen.
-- **QR codes**: genuinely generated and scannable (a real QR encoder), but the signature is a short, non-cryptographic hash, not production-grade security.
-- **Ticket printing** (Counter Sale): opens the browser's print dialog, not a real thermal printer.
-
-## 9. Known limitations, inconsistencies, and issues
-
-- **Policy conflict, deliberately preserved**: the prototype's own customer-facing text has always said *"cancelled up to 48 hours before the visit (10% fee)"* — this is what the new cancellation feature uses. MGM's **published** FAQ (checked separately during earlier research) states a **25% penalty**, not 10%. I did not change the prototype's number, per instruction to preserve the existing customer-facing policy rather than silently invent or correct it — **this discrepancy must be resolved with MGM before any production build.**
-- **A pending cancellation does not block gate entry.** The gate scanner only refuses a ticket when the booking's status is literally `"cancelled"`; a booking with a cancellation merely *requested* (not yet approved) can still be scanned and admitted. This was a deliberate choice to avoid risking the existing scan-validation logic under time pressure — flagged here rather than silently left as a surprise.
-- **Booking modification regenerates ticket IDs.** If a ticket had already been scanned at the gate, modifying that booking's quantities discards that scan history (the new tickets start "valid," unscanned). Acceptable for a demo; not acceptable for production without a real modification/versioning model.
-- **The existing one-click "Cancel & refund" admin action (added before this pass) still exists on every booking** alongside the new request → approve/reject workflow. They are separate, non-conflicting paths — the old one instantly cancels and refunds (90%); the new one is the proper request/approval flow this pass added. Both are visible in the Bookings detail view.
-- **"My Bookings" identifies customers by phone number only** (no login exists anywhere in the app) — anyone who knows a phone number used in a booking can view it. Fine for a demo; not acceptable for production.
-- **Counter Sale was deliberately left untouched** this pass, with one exception: its existing "booking created" step now also writes one line to the new Activity Log/Notifications, so it shows up consistently alongside the other new features. No other change was made to it.
-- **Park capacity is a configured demo number** (the existing `defaultCapacity` setting, 4,000), not a live measured capacity.
-
-## 10. Testing performed and outstanding manual checks
-
-**Automated / static checks actually performed:**
-- The embedded JavaScript was extracted and run through `node --check` after every edit in this pass — confirmed syntactically valid, with zero errors, at the end of the pass.
-- Every new function/variable reference was individually located and confirmed as a genuine existing declaration in the bundle before being used (not guessed).
-- File-size and marker counts were checked after each change to confirm no accidental duplication.
-
-**I have not been able to open the file in a real browser from this session** (no working browser automation was available here), so the following still need a human to verify before the demo:
-- [ ] The file opens without a blank screen or console error.
-- [ ] Customer booking → payment → confirmation still works exactly as before.
-- [ ] QR codes on the confirmation screen are visible and scannable.
-- [ ] Staff Scanner login and ticket validation (valid/duplicate/invalid) still work.
-- [ ] Counter Sale still works end-to-end and the resulting booking shows up in Admin → Bookings.
-- [ ] **New**: request a cancellation as a customer, then approve it in Admin → Payments, and confirm the status updates on both sides.
-- [ ] **New**: reject a refund request and confirm the rejection reason displays.
-- [ ] **New**: modify a booking in Admin → Bookings and confirm the new total and tickets are correct.
-- [ ] **New**: edit a ticket category's new entitlement fields and confirm they save.
-- [ ] **New**: confirm the Dashboard's new row shows sensible numbers.
-- [ ] **New**: confirm Notifications and Activity Log populate after the actions above.
-- [ ] **New**: use "My Bookings" on the customer home screen to find a booking by phone number.
-- [ ] Close and reopen the browser (or refresh) and confirm everything persisted via `localStorage`.
-
-**Please do not present this to management until the checklist above has been run at least once.**
-
-## 11. Resetting demo data
-
-The existing reset mechanism is unchanged. If a reset control is not visible on screen, the fastest way to reseed fresh demo data is to open the browser's developer tools on this page, run:
-```js
-localStorage.removeItem("mgm-dizzee-proto-v3"); location.reload();
+```bash
+npm install
+npm run dev            # http://localhost:5173 (influencer screens need the backend running)
+npm test               # booking business-rule tests (Node ≥ 22.18)
+npm run typecheck
+npm run build          # dist/ (served by the backend in production)
+npm run build:static   # regenerates static-build/index.html
 ```
-This clears all bookings, cancellations, refunds, notifications and activity log entries made during a demo run and reseeds the original mock dataset.
+
+- Backend: see the influencer handover §10–11.
+- Staff Scanner demo login: `STF1024` … `STF1052`, password `mgm123`. `STF1052` is inactive.
+
+## 6. Known limitations (prototype)
+
+- **Bookings, payments, staff and the activity log live in each browser's `localStorage`.** There is no server-side booking database and no real authentication; Admin and Counter Sale are open to anyone who opens the app.
+- **Payments are simulated.** Browser-generated "paid" events are **not** a payment confirmation (influencer handover §12 lists what must change before Razorpay).
+- **My Bookings looks up bookings by mobile number alone.** Production must verify ownership with a one-time code.
+- **A pending cancellation request does not block gate entry.** This is deliberate: the ticket stays valid until approved.
+- **Refunds are recorded only; no money moves.** The modification price difference is shown but not collected or refunded.
+- **The cancellation fee is 10%.** The prototype's customer-facing text has always said 10%, but MGM's published FAQ says **25%**. Confirm with MGM before production.
+- **No partial cancellations.** This matches the policy text.
+- **The Activity Log is a demonstration record**, not a tamper-proof audit trail.
+- **The single-file build works offline except for the influencer screens**, which need the backend; they show "Cannot reach the ticketing API".
