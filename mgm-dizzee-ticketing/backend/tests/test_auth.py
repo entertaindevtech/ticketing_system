@@ -110,3 +110,20 @@ def test_customer_records_are_not_reachable_without_credentials(client):
     assert client.get(f"/api/bookings/{b['id']}").status_code == 404
     assert client.get("/api/admin/bookings").status_code == 401
     assert "9876543210" not in client.get("/api/catalog").text
+
+
+def test_production_refuses_unsafe_settings():
+    from app.config import Settings
+    from app.main import check_production, create_app
+    import pytest as _pytest
+    bad = Settings(app_env="production", database_url="sqlite:///x.db", public_app_url="http://x", demo_today="2026-11-20")
+    assert len(check_production(bad)) == 5
+    with _pytest.raises(RuntimeError, match="Refusing to start"):
+        create_app(bad)
+    ok = Settings(app_env="production", database_url="postgresql://u:p@h/db", public_app_url="https://tickets.example.com",
+                  app_secret="x" * 40, simulated_payments=False, demo_today=None)
+    assert check_production(ok) == []
+    staging = Settings(app_env="staging", database_url="postgresql://u:p@h/db", public_app_url="https://staging.example.com",
+                       app_secret="y" * 40, simulated_payments=True, demo_today="2026-11-20")
+    assert check_production(staging) == []  # demo clock and simulated payments are allowed on staging
+    assert check_production(Settings(app_env="staging", database_url="postgresql://u:p@h/db", public_app_url="https://s.example.com")) != []

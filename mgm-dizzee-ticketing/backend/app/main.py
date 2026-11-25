@@ -29,8 +29,33 @@ logging.basicConfig(level=logging.INFO)
 ATTRIBUTION = "This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com."
 
 
+def check_production(s: Settings) -> list[str]:
+    """Settings that must never reach a shared environment. staging (which may hold real customer data) needs real
+    secrets, PostgreSQL and https; production additionally forbids the demo clock and the simulated payment
+    provider. Returns the problems (empty = OK)."""
+    from .config import DEV_SECRET
+    problems = []
+    if s.app_env not in ("staging", "production"):
+        return problems
+    if not s.database_url.startswith(("postgres://", "postgresql")):
+        problems.append("DATABASE_URL must be PostgreSQL")
+    if s.app_secret == DEV_SECRET or len(s.app_secret) < 32:
+        problems.append("APP_SECRET must be a random secret of at least 32 characters")
+    if not s.public_app_url.startswith("https://"):
+        problems.append("PUBLIC_APP_URL must be https")
+    if s.app_env == "production":
+        if s.demo_today:
+            problems.append("DEMO_TODAY must not be set")
+        if s.simulated_payments:
+            problems.append("SIMULATED_PAYMENTS must be off (no verified payment gateway is integrated yet)")
+    return problems
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    problems = check_production(settings)
+    if problems:
+        raise RuntimeError(f"Refusing to start with APP_ENV={settings.app_env}: " + "; ".join(problems))
     @asynccontextmanager
     async def lifespan(_app):
         start_background_refresh(settings.geoip_db_path)
