@@ -168,7 +168,7 @@ def test_regional_and_source_aggregates(client):
     assert (s["sessions"], s["bookings"], s["paid_bookings"], s["tickets"], s["revenue"]) == (4, 4, 3, 6, 3005 * 3)
     assert s["conversion_rate"] == 75.0 and s["unknown_location_bookings"] == 1
     src = {x["source"]: x for x in r["sources"]}
-    assert [x["source"] for x in r["sources"]] == ["influencer", "direct", "organic", "paid", "social", "referral", "unknown"]
+    assert [x["source"] for x in r["sources"]] == ["influencer", "direct", "organic", "paid", "social", "referral", "unknown", "counter"]
     assert (src["direct"]["sessions"], src["direct"]["bookings"], src["direct"]["paid_bookings"], src["direct"]["conversion_rate"]) == (2, 1, 1, 50.0)
     assert (src["organic"]["bookings"], src["organic"]["paid_bookings"], src["organic"]["revenue"]) == (1, 0, 0)  # cancelled excluded
     assert (src["unknown"]["sessions"], src["unknown"]["paid_bookings"]) == (0, 1)

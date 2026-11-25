@@ -151,7 +151,10 @@ def compute_regional(db: Session, start: date | None = None, end: date | None = 
     paid_bookings   = those still paid; tickets and revenue (incl. GST) count paid bookings only
     conversion_rate = paid_bookings / sessions for the same period and slice. Bookings made by sessions created
                       before the period still count, so short periods can over- or under-state it (can exceed 100%).
-    Counter (walk-in) sales are not website traffic and are not included.
+    Every booking confirmed by the booking engine (website and counter) has its row here, written in the same
+    transaction as the payment, cancellation or modification, so these figures follow the booking ledger.
+    Counter (walk-in) sales appear in the summary and as the "counter" channel; they carry no visitor location,
+    so they are left out of the country/state/city tables and of unknown-location bookings.
     """
     lo, hi = _range(start, end)
     paid = BA.status == "paid"
@@ -159,10 +162,10 @@ def compute_regional(db: Session, start: date | None = None, end: date | None = 
                            .where(*_within(VS.created_at, lo, hi))
                            .group_by(VS.source, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city)).all()
     book_rows = db.execute(select(
-        BA.source, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city, func.count(BA.id),
+        BA.source, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city, func.count(BA.id),
         func.sum(case((paid, 1), else_=0)), func.coalesce(func.sum(case((paid, BA.tickets), else_=0)), 0),
         func.coalesce(func.sum(case((paid, BA.total_amount), else_=0)), 0),
-    ).where(*_within(BA.paid_at, lo, hi)).group_by(BA.source, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city)).all()
+    ).where(*_within(BA.paid_at, lo, hi)).group_by(BA.source, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city)).all()
 
     blank = lambda: {"sessions": 0, "bookings": 0, "paid_bookings": 0, "tickets": 0, "revenue": ZERO}  # noqa: E731
     dims = {"sources": defaultdict(blank), "countries": defaultdict(blank), "states": defaultdict(blank), "cities": defaultdict(blank)}
@@ -177,24 +180,31 @@ def compute_regional(db: Session, start: date | None = None, end: date | None = 
         for d, k in keys(src, cc, country, region, city):
             dims[d][k]["sessions"] += n
     unknown_loc = 0
-    for src, cc, country, region, city, n, n_paid, t, rev in book_rows:
+    channel = {"web": blank(), "counter": blank()}
+    for src, ch, cc, country, region, city, n, n_paid, t, rev in book_rows:
         vals = {"bookings": n, "paid_bookings": int(n_paid or 0), "tickets": int(t or 0), "revenue": Decimal(rev or 0)}
-        if not cc:
+        counter = ch == "counter"
+        if not cc and not counter:
             unknown_loc += vals["paid_bookings"]
         for k, v in vals.items():
             total[k] += v
-        for d, k in keys(src, cc, country, region, city):
+            channel["counter" if counter else "web"][k] += v
+        for d, k in (keys(src, cc, country, region, city)[:1] if counter else keys(src, cc, country, region, city)):
             for f, v in vals.items():
                 dims[d][k][f] += v
 
     def out(v):
         return {**v, "revenue": float(v["revenue"]), "conversion_rate": _rate(v["paid_bookings"], v["sessions"])}
 
-    for s in SOURCES:  # always list every source so empty channels are visible
+    channel["web"]["sessions"] = total["sessions"]
+    order = SOURCES + ("counter",)
+    for s in order:  # always list every source so empty channels are visible
         dims["sources"][s]
     return {
-        "summary": {**out(total), "unknown_location_bookings": unknown_loc},
-        "sources": [{"source": k, **out(v)} for k, v in sorted(dims["sources"].items(), key=lambda kv: SOURCES.index(kv[0]) if kv[0] in SOURCES else 99)],
+        # conversion is a website measure: website paid bookings / visitor sessions (counter sales excluded)
+        "summary": {**out(total), "conversion_rate": _rate(channel["web"]["paid_bookings"], total["sessions"]), "unknown_location_bookings": unknown_loc,
+                    "website": out(channel["web"]), "counter": {**out(channel["counter"]), "conversion_rate": None}},
+        "sources": [{"source": k, **out(v)} for k, v in sorted(dims["sources"].items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else 99)],
         "countries": sorted(({"country": k, **out(v)} for k, v in dims["countries"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
         "states": sorted(({"state": k, **out(v)} for k, v in dims["states"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
         "cities": sorted(({"city": k[0], "state": k[1], **out(v)} for k, v in dims["cities"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
