@@ -1,5 +1,7 @@
 # Centralized Booking & Transaction Engine — Phase 1: Audit and Migration Plan
 
+> **Status: implemented** on branch `feat/centralized-booking-engine` (milestones A–G; Razorpay excluded). See [HANDOVER.md](HANDOVER.md) and [docs/TEST-REPORT.md](docs/TEST-REPORT.md).
+
 *Draft for review, 25 Nov 2026. Planning only: no code, schema, migration or environment file has been changed. Based on branch `feat/influencer-regional-intelligence` at `22756ff`.*
 
 ---
