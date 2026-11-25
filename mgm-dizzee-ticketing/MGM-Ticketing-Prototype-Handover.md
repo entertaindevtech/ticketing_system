@@ -1,5 +1,7 @@
 # MGM Dizzee World Ticketing — Technical Handover
 
+> **Superseded (25 Nov 2026).** This describes the earlier browser-only prototype (bookings in `localStorage`, offline single-file build). Bookings, payments, tickets, the gate and staff accounts are now server-side; see [HANDOVER.md](HANDOVER.md). Kept for history; the business rules in §2–§3 still apply and are now enforced by the server.
+
 Last updated 25 Nov 2026 (source consolidation). This replaces the 22 Nov version, which described a hand-patched `static-build/index.html` that is no longer maintained by hand.
 
 The influencer and regional-sales backend is documented separately in [INFLUENCER-MODULE-HANDOVER.md](INFLUENCER-MODULE-HANDOVER.md).

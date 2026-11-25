@@ -130,17 +130,23 @@ def _event(db: Session, c: InfluencerCommission, from_status: str | None, note: 
 
 def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token: str | None, payment_status: str,
                     amounts: BookingAmounts, payment_ref: str | None = None,
-                    paid_at: datetime | None = None) -> BookingAttribution | None:
-    """Record a paid website booking with its session's region and source. Idempotent per booking_ref.
+                    paid_at: datetime | None = None, *, session: VisitorSession | None = None, booking_id: int | None = None,
+                    channel: str = "web", commit: bool = True) -> BookingAttribution | None:
+    """Record a paid booking with its session's region and source. Idempotent per booking_ref.
 
-    A commission is created only if the session holds a live influencer attribution at payment time.
+    Called by the booking engine inside its payment-capture transaction (commit=False). A commission is created
+    only for website bookings whose session holds a live influencer attribution at payment time; counter sales
+    (channel="counter") are recorded for sales reporting but can never be attributed.
     Returns None only for unpaid events."""
     if payment_status != "paid":
         return None
     existing = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == booking_ref))
     if existing:
         return existing  # repeated callback: never a second record or commission
-    session = db.scalar(select(VisitorSession).where(VisitorSession.token == session_token)) if session_token else None
+    if channel != "web":
+        session = None
+    elif session is None and session_token:
+        session = db.scalar(select(VisitorSession).where(VisitorSession.token == session_token))
     now = utcnow()
     # A delayed (retried) event may report the real payment time; never trust it beyond [session start, now].
     paid = now
@@ -159,7 +165,8 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
             ("geo_country_code", "geo_country", "geo_region", "geo_city", "utm_source", "utm_medium", "utm_campaign")}
     attr = BookingAttribution(
         booking_ref=booking_ref, influencer_id=influencer.id if influencer else None, session_id=session.id if session else None,
-        campaign=session.campaign if influencer else None, source=session.source if session else "unknown",
+        campaign=session.campaign if influencer else None, booking_id=booking_id, channel=channel,
+        source="counter" if channel == "counter" else session.source if session else "unknown",
         payment_ref=payment_ref, paid_at=paid, visit_date=amounts.visit_date, tickets=amounts.tickets,
         ticket_net_amount=amounts.ticket_net, addons_amount=amounts.addons, tax_amount=amounts.tax,
         total_amount=amounts.total, status="paid", **snap,
@@ -168,10 +175,12 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
     try:
         db.flush()
     except IntegrityError:  # a concurrent duplicate callback won the race
+        if not commit:
+            raise
         db.rollback()
         return db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == booking_ref))
     if not influencer:
-        db.commit()
+        _done(db, commit)
         return attr
     basis = commission_basis(cfg, amounts)
     c = InfluencerCommission(
@@ -182,11 +191,15 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
     db.add(c)
     db.flush()
     _event(db, c, None, f"Created on payment {payment_ref or ''}".strip())
-    db.commit()
+    _done(db, commit)
     return attr
 
 
-def cancel_booking(db: Session, booking_ref: str, reason: str | None) -> BookingAttribution | None:
+def _done(db: Session, commit: bool):
+    db.commit() if commit else db.flush()
+
+
+def cancel_booking(db: Session, booking_ref: str, reason: str | None, commit: bool = True) -> BookingAttribution | None:
     attr = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == booking_ref))
     if not attr or attr.status == "cancelled":
         return attr
@@ -198,11 +211,11 @@ def cancel_booking(db: Session, booking_ref: str, reason: str | None) -> Booking
         c.status, c.reversed_at, c.reversal_reason = "reversed", utcnow(), (reason or "Booking cancelled / refunded")[:255]
         note = "Booking cancelled/refunded" + (" - commission was already paid out; recover from influencer" if prev == "paid" else "")
         _event(db, c, prev, note)
-    db.commit()
+    _done(db, commit)
     return attr
 
 
-def modify_booking(db: Session, cfg: Settings, booking_ref: str, amounts: BookingAmounts) -> BookingAttribution | None:
+def modify_booking(db: Session, cfg: Settings, booking_ref: str, amounts: BookingAmounts, commit: bool = True) -> BookingAttribution | None:
     """Update an attributed booking's amounts without ever creating a second commission."""
     attr = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == booking_ref))
     if not attr or attr.status != "paid":
@@ -220,7 +233,7 @@ def modify_booking(db: Session, cfg: Settings, booking_ref: str, amounts: Bookin
             _event(db, c, "pending", f"Booking modified: amount {old} -> {new_amount}")
     elif c:
         _event(db, c, c.status, "Booking modified after approval; commission amount unchanged - review manually")
-    db.commit()
+    _done(db, commit)
     return attr
 
 

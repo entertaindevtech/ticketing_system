@@ -3,11 +3,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty, Kpi, Td, Th } from "./admin";
 import { HBars } from "./charts";
-import { API } from "./referral";
+import { api } from "./api";
 import { fmtTime, inr } from "./store";
 import { Badge, Button, DateInput, Field, Icon, Modal, Select, Toggle, copyText, inputCls, useStore } from "./ui";
 
-const TOKEN_KEY = "mgm-admin-token";
 const PLATFORMS = ["Instagram", "YouTube", "Facebook", "X", "TikTok", "Blog", "Other"];
 const STATUS_TONE: Record<string, string> = { pending: "amber", approved: "blue", paid: "green", reversed: "violet" };
 
@@ -30,18 +29,9 @@ type Commission = {
 };
 
 // ---------- api ----------
-class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
-function useApi(token: string, onUnauthorized: () => void) {
-  return useCallback(async <T,>(path: string, init?: { method?: string; body?: unknown }): Promise<T> => {
-    let r: Response;
-    try {
-      r = await fetch(`${API}/api/admin${path}`, { method: init?.method || "GET", headers: { "Content-Type": "application/json", "X-Admin-Token": token }, body: init?.body ? JSON.stringify(init.body) : undefined });
-    } catch { throw new ApiError(0, "Cannot reach the ticketing API. Check that the backend is running."); }
-    if (r.status === 401) { onUnauthorized(); throw new ApiError(401, "Admin token rejected"); }
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new ApiError(r.status, typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? data.detail.map((d: { msg: string }) => d.msg).join("; ") : `Request failed (${r.status})`);
-    return data as T;
-  }, [token, onUnauthorized]);
+// Uses the signed-in staff session (admin or marketing role); the server checks the role on every call.
+function useApi() {
+  return useCallback(<T,>(path: string, init?: { method?: string; body?: unknown }): Promise<T> => api<T>(`/api/admin${path}`, init), []);
 }
 type Call = ReturnType<typeof useApi>;
 
@@ -62,18 +52,14 @@ const ErrorBox = ({ text, retry }: { text: string; retry?: () => void }) => <div
 
 // ---------- root ----------
 export default function InfluencerModule() {
-  const [token, setToken] = useState(() => { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; } });
   const [tab, setTab] = useState<"regional" | "overview" | "influencers" | "commissions">("regional");
-  const signOut = useCallback(() => { try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } setToken(""); }, []);
-  const call = useApi(token, signOut);
-  if (!token) return <TokenGate onToken={(t) => { try { sessionStorage.setItem(TOKEN_KEY, t); } catch { /* ignore */ } setToken(t); }} />;
+  const call = useApi();
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-1.5">
         {([["regional", "Regions & channels"], ["overview", "Influencer performance"], ["influencers", "Influencers"], ["commissions", "Commissions"]] as const).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${tab === k ? "bg-navy-950 text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300"}`}>{l}</button>
         ))}
-        <button onClick={signOut} className="ml-auto text-xs text-slate-500 hover:text-navy-950 flex items-center gap-1"><Icon name="logout" size={14} />Disconnect</button>
       </div>
       {tab === "regional" && <RegionalDashboard call={call} />}
       {tab === "overview" && <Overview call={call} />}
@@ -84,28 +70,6 @@ export default function InfluencerModule() {
   );
 }
 
-function TokenGate({ onToken }: { onToken: (t: string) => void }) {
-  const [t, setT] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    setBusy(true); setErr("");
-    try {
-      const r = await fetch(`${API}/api/admin/influencers`, { headers: { "X-Admin-Token": t.trim() } });
-      if (r.ok) onToken(t.trim()); else setErr(r.status === 401 ? "That token was rejected." : r.status === 503 ? "The server has no ADMIN_API_TOKEN configured." : `Server error (${r.status}).`);
-    } catch { setErr("Cannot reach the ticketing API. Check that the backend is running."); }
-    setBusy(false);
-  };
-  return (
-    <Card className="max-w-lg">
-      <div className="flex items-start gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-mgm-yellow/30"><Icon name="lock" /></span><div><h3 className="font-bold text-navy-950">Connect to the ticketing API</h3><p className="text-sm text-slate-500">Influencer data is stored on the server. Enter the admin API token (the server's ADMIN_API_TOKEN). It is kept only for this browser tab.</p></div></div>
-      <form className="mt-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (t.trim()) void submit(); }}>
-        <input type="password" className={inputCls} value={t} onChange={(e) => setT(e.target.value)} placeholder="Admin API token" aria-label="Admin API token" autoComplete="off" />
-        <Button type="submit" disabled={!t.trim() || busy}>{busy ? "Checking…" : "Connect"}</Button>
-      </form>
-      {err && <div className="mt-2 text-sm text-red-600">{err}</div>}
-    </Card>
-  );
-}
-
 // ---------- all website traffic: overall regional sales, acquisition channels, regional funnel ----------
 type Funnel = { sessions: number; bookings: number; paid_bookings: number; tickets: number; revenue: number; conversion_rate: number };
 type Regional = {
@@ -113,7 +77,7 @@ type Regional = {
   sources: (Funnel & { source: string })[]; countries: (Funnel & { country: string })[];
   states: (Funnel & { state: string })[]; cities: (Funnel & { city: string; state: string })[]; geoip_available: boolean;
 };
-const SOURCE_LABEL: Record<string, string> = { influencer: "Influencer referral", direct: "Direct", organic: "Organic search", paid: "Paid / tagged campaign", social: "Social", referral: "External referral", unknown: "Unknown (no session)" };
+const SOURCE_LABEL: Record<string, string> = { influencer: "Influencer referral", direct: "Direct", organic: "Organic search", paid: "Paid / tagged campaign", social: "Social", referral: "External referral", unknown: "Unknown (no session)", counter: "Counter (walk-in)" };
 
 function FunnelTable({ rows, first }: { rows: (Funnel & { label: React.ReactNode; key: string })[]; first: string }) {
   if (!rows.length) return <Empty text="No visitor sessions or bookings in this period." />;
@@ -136,7 +100,7 @@ function RegionalDashboard({ call }: { call: Call }) {
         <Field label="From"><DateInput value={from} onChange={setFrom} placeholder="All time" clearable max={to || undefined} /></Field>
         <Field label="To"><DateInput value={to} onChange={setTo} placeholder="Today" clearable min={from || undefined} /></Field>
         <Button variant="outline" icon="refresh" onClick={reload}>Refresh</Button>
-        <span className="text-xs text-slate-500 ml-auto max-w-md">All online visitors and website bookings, whatever brought them. Sessions are counted by first-visit date, bookings by payment date. Counter (walk-in) sales are not included.</span>
+        <span className="text-xs text-slate-500 ml-auto max-w-md">All visitors and bookings from the booking ledger. Sessions are counted by first-visit date, bookings by payment date. Counter (walk-in) sales are their own channel: they have no visitor session or location, so they are left out of the regional tables and of conversion.</span>
       </div>
       {error && <ErrorBox text={error} retry={reload} />}
       {loading && !data && <Loading />}

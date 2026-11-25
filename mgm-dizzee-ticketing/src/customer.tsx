@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  Booking, Cart, Ctx, MAX_DATE, MIN_DATE, MONTHS, Offer, Priced, TODAY, WD, addDays, buildBooking, dateStatus, dow, eligibleOffers,
-  emptyCart, fmtDate, nowStamp, fmtShort, inr, offerUnit, parseISO, priceAdj, priceCart, qrPayload, ticketPrice, tierOf, datesBetween,
-  CANCEL_FEE_PCT, cancellationEligibility, cancellationFee, logEvent, requestCancellation,
+  Booking, Cart, Ctx, MAX_DATE, MIN_DATE, MONTHS, Offer, Priced, TODAY, WD, addDays, dateStatus, dow, eligibleOffers,
+  emptyCart, fmtDate, fmtShort, inr, offerUnit, parseISO, priceAdj, priceCart, ticketPrice, tierOf, datesBetween,
+  cancellationEligibility, cancellationFee,
 } from "./store";
+import { type Access, ApiError, api, bookingHeaders, idemKey, legacyBookings, myBookings, parseAccessLink, rememberBooking } from "./api";
+import { visitorToken } from "./referral";
 import mascotUrl from "./assets/mascot.png";
-import { reportPaid } from "./referral";
 import { Reveal } from "./ui";
 import { Badge, Button, Field, Icon, Logo, Modal, OfferArt, QR, Qty, TicketArt, copyText, inputCls, useStore } from "./ui";
 
@@ -15,17 +16,36 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "details", label: "Customer Details" }, { key: "payment", label: "Payment" },
 ];
 
+/** Live preview from the local engine, replaced by the server's quote (authoritative, validates coupons) as soon
+ * as it arrives for the current cart. */
+export function useServerQuote(cart: Cart, date: string, local: Priced | null): Priced | null {
+  const [server, setServer] = useState<{ key: string; priced: Priced } | null>(null);
+  const key = JSON.stringify([date, cart]);
+  useEffect(() => {
+    if (!date) return;
+    let live = true;
+    const t = setTimeout(() => {
+      api<Priced>("/api/quote", { method: "POST", body: { visit_date: date, cart } }).then((p) => { if (live) setServer({ key, priced: p }); }).catch(() => undefined);
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return server?.key === key ? server.priced : local;
+}
+
 export function useCtx(): Ctx { const { db } = useStore(); return { tickets: db.tickets, offers: db.offers, dateCfg: db.dateCfg, settings: db.settings }; }
 
 export default function CustomerApp() {
   const { db } = useStore();
   const ctx = useCtx();
-  const [step, setStep] = useState<Step>("home");
+  const [step, setStep] = useState<Step>(() => (parseAccessLink(decodeURIComponent(location.hash)) ? "mybookings" : "home"));
   const [date, setDate] = useState<string>("");
   const [cart, setCart] = useState<Cart>(emptyCart());
   const [customer, setCustomer] = useState({ name: "", phone: "", email: "", visitors: 0, notes: "" });
-  const [booking, setBooking] = useState<Booking | null>(null);
-  const priced = useMemo(() => (date ? priceCart(cart, date, ctx, TODAY, db.addons) : null), [cart, date, ctx, db.addons]);
+  const [booking, setBooking] = useState<{ booking: Booking; access: Access } | null>(null);
+  const local = useMemo(() => (date ? priceCart(cart, date, ctx, TODAY, db.addons) : null), [cart, date, ctx, db.addons]);
+  const priced = useServerQuote(cart, date, local);
+  // #booking/<ref>/<token>: a customer's booking link
+  const [link] = useState(() => parseAccessLink(decodeURIComponent(location.hash)));
 
   // when date changes, drop offers not valid on the new date
   const changeDate = (d: string) => {
@@ -53,9 +73,9 @@ export default function CustomerApp() {
         {step === "tickets" && date && priced && <TicketsStep date={date} setDate={changeDate} cart={cart} setCart={setCart} priced={priced} onBack={() => go("date")} onNext={() => go("addons")} />}
         {step === "addons" && date && priced && <AddonsStep cart={cart} setCart={setCart} priced={priced} date={date} onBack={() => go("tickets")} onNext={() => go("details")} />}
         {step === "details" && date && priced && <DetailsStep date={date} priced={priced} customer={customer} setCustomer={setCustomer} onBack={() => go("addons")} onNext={() => go("payment")} />}
-        {step === "payment" && date && priced && <PaymentStep date={date} priced={priced} cart={cart} customer={customer} onBack={() => go("details")} onPaid={(b) => { setBooking(b); go("done"); }} />}
-        {step === "done" && booking && <Confirmation booking={booking} onHome={restart} />}
-        {step === "mybookings" && <MyBookings onHome={() => go("home")} />}
+        {step === "payment" && date && priced && <PaymentStep date={date} priced={priced} cart={cart} customer={customer} onBack={() => go("details")} onPaid={(b, a) => { setBooking({ booking: b, access: a }); go("done"); }} />}
+        {step === "done" && booking && <Confirmation booking={booking.booking} access={booking.access} onHome={restart} />}
+        {step === "mybookings" && <MyBookings onHome={() => { if (link) history.replaceState(null, "", location.pathname); go("home"); }} open={link} />}
       </main>
       {(step === "home" || step === "done") && <SiteFooter />}
     </div>
@@ -644,37 +664,47 @@ function DetailsStep({ date, priced, customer, setCustomer, onBack, onNext }: { 
 }
 
 // ---------------- Payment ----------------
-function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: string; priced: Priced; cart: Cart; customer: Booking["customer"]; onBack: () => void; onPaid: (b: Booking) => void }) {
-  const { db, update } = useStore(); const ctx = useCtx();
+function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: string; priced: Priced; cart: Cart; customer: Booking["customer"]; onBack: () => void; onPaid: (b: Booking, a: Access) => void }) {
+  const { db } = useStore();
   const [method, setMethod] = useState<"upi" | "card" | "nb">("upi");
   const [upi, setUpi] = useState("");
   const [card, setCard] = useState({ num: "", exp: "", cvv: "", name: customer.name });
   const [bank, setBank] = useState("");
   const [stage, setStage] = useState<"form" | "processing" | "success" | "failed">("form");
-  const [ref] = useState(() => "MGM-" + Math.random().toString(36).slice(2, 8).toUpperCase().replace(/[01IO]/g, "7"));
-  const valid = method === "upi" ? /^[\w.-]{2,}@[a-z]{2,}$/i.test(upi) : method === "card" ? card.num.replace(/\s/g, "").length === 16 && /^\d\d\/\d\d$/.test(card.exp) && card.cvv.length === 3 : !!bank;
-  const pay = (decline = false) => {
+  const [key] = useState(idemKey);
+  const [held, setHeld] = useState<{ booking: Booking; access: Access } | null>(null);
+  const [error, setError] = useState("");
+  // The server prices the booking and holds the tickets while the customer pays (Idempotency-Key: a retry or a
+  // double click never creates a second booking).
+  useEffect(() => {
+    api<{ booking: Booking; accessToken: string }>("/api/bookings", {
+      method: "POST", headers: { "Idempotency-Key": key },
+      body: { visit_date: date, cart: { ...cart, coupon: cart.coupon && !priced.couponError ? cart.coupon : "" }, session_token: visitorToken(),
+              customer: { name: customer.name, phone: customer.phone, email: customer.email || null, notes: customer.notes || null } },
+    }).then((r) => { const a = { ref: r.booking.id, token: r.accessToken }; rememberBooking(a); setHeld({ booking: r.booking, access: a }); })
+      .catch((e: Error) => setError(e.message));
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ref = held?.booking.id || "…";
+  const total = held?.booking.totals.total ?? priced.total;
+  const valid = !!held && (method === "upi" ? /^[\w.-]{2,}@[a-z]{2,}$/i.test(upi) : method === "card" ? card.num.replace(/\s/g, "").length === 16 && /^\d\d\/\d\d$/.test(card.exp) && card.cvv.length === 3 : !!bank);
+  const pay = async (decline = false) => {
+    if (!held) return;
     setStage("processing");
-    setTimeout(() => {
-      if (decline) { // demo of a failed payment: no booking, no tickets, nothing reported for commission
-        update((d) => logEvent(d, "payment", `Payment declined for ${ref} (${inr(priced.total)}) — no booking created`, ref, "Customer"));
-        setStage("failed");
-        return;
-      }
+    try {
+      const h = bookingHeaders(held.access);
+      const p = await api<{ payment_id: number }>(`/api/bookings/${held.booking.id}/payments`, { method: "POST", headers: h, body: { method: method === "upi" ? "UPI" : method === "card" ? "Card" : "Net Banking" } });
+      const b = await api<Booking>(`/api/bookings/${held.booking.id}/payments/${p.payment_id}/simulate`, { method: "POST", headers: h, body: { outcome: decline ? "decline" : "success" } });
+      if (b.state !== "confirmed") { setStage("failed"); return; }
       setStage("success");
-      setTimeout(() => {
-        const b = buildBooking(cart, priced, date, customer, method === "upi" ? "UPI" : method === "card" ? "Card" : "Net Banking", Math.random, nowStamp(), ctx);
-        b.id = ref; b.live = true;
-        update((d) => {
-          d.bookings.unshift(b);
-          b.offerIds.forEach((id) => { const o = d.offers.find((x) => x.id === id); if (o) o.redemptions += 1; });
-          logEvent(d, "booking", `New online booking ${b.id} · ${inr(b.totals.total)}`, b.id, "Customer");
-        });
-        reportPaid(b);
-        onPaid(b);
-      }, 900);
-    }, 1800);
+      setTimeout(() => onPaid(b, held.access), 900);
+    } catch (e) { setError((e as Error).message); setStage("form"); }
   };
+  if (error && !held) return (
+    <div className="max-w-lg mx-auto card p-6 text-center fade-in">
+      <Icon name="alert" size={30} className="mx-auto text-mgm-red mb-2" /><div className="font-bold text-navy-950">We couldn't hold these tickets</div>
+      <p className="text-sm text-slate-600 mt-1">{error}</p><Button className="mt-4" variant="outline" icon="back" onClick={onBack}>Back</Button>
+    </div>
+  );
   const tickets = priced.lines.filter((l) => l.kind !== "addon");
   const addons = priced.lines.filter((l) => l.kind === "addon");
   return (
@@ -693,7 +723,7 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
             {(priced.offerSavings > 0 || priced.couponOffer) && <div><div className="text-white/75 text-xs mb-1">Applied offers</div>{priced.lines.filter((l) => l.kind === "offer").map((l) => <Badge key={l.refId} tone="yellow" className="mr-1 mb-1">{l.label}</Badge>)}{priced.couponOffer && <Badge tone="yellow">{priced.couponOffer.coupon}</Badge>}<div className="text-emerald-300 text-xs mt-1">Saved {inr(priced.offerSavings + priced.couponDiscount)}</div></div>}
             <div className="flex justify-between text-white/70"><span>GST ({db.settings.gst}%)</span><span>{inr(priced.tax)}</span></div>
           </div>
-          <div className="mt-auto pt-6"><div className="text-white/75 text-xs">Amount payable</div><div className="font-display text-4xl font-bold">{inr(priced.total)}</div></div>
+          <div className="mt-auto pt-6"><div className="text-white/75 text-xs">Amount payable</div><div className="font-display text-4xl font-bold">{inr(total)}</div>{held?.booking.holdExpiresAt && <div className="text-[11px] text-white/70 mt-1">Tickets held for you until {held.booking.holdExpiresAt.slice(11, 16)}</div>}</div>
         </div>
         {/* right methods */}
         <div className="p-5 sm:p-7 relative min-h-[460px]">
@@ -710,7 +740,7 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
                   <Field label="UPI ID" hint="e.g. name@okicici, 9840012345@ybl"><input className={inputCls} value={upi} onChange={(e) => setUpi(e.target.value.trim())} placeholder="yourname@bank" /></Field>
                   <div className="flex flex-wrap gap-2">{["@okhdfcbank", "@ybl", "@paytm", "@okicici"].map((s) => <button key={s} onClick={() => setUpi((upi.split("@")[0] || customer.phone) + s)} className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold hover:border-navy-900">{s}</button>)}</div>
                 </div>
-                <div className="hidden sm:block text-center"><div className="rounded-2xl border border-slate-200 p-2"><QR text={`upi://pay?pa=mgmdizzee@demo&am=${priced.total}&tn=${ref}`} size={120} /></div><div className="text-[11px] text-slate-500 mt-1">Scan with any UPI app<br />(demo QR)</div></div>
+                <div className="hidden sm:block text-center"><div className="rounded-2xl border border-slate-200 p-2"><QR text={`upi://pay?pa=mgmdizzee@demo&am=${total}&tn=${ref}`} size={120} /></div><div className="text-[11px] text-slate-500 mt-1">Scan with any UPI app<br />(demo QR)</div></div>
               </div>
             )}
             {method === "card" && (
@@ -731,9 +761,10 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
           </div>
           <div className="mt-7 flex flex-col-reverse sm:flex-row gap-3 sm:items-center sm:justify-between">
             <Button variant="ghost" icon="back" onClick={onBack}>Back</Button>
-            <Button size="lg" variant="dark" disabled={!valid} onClick={() => pay()} className="sm:min-w-56" icon="lock">Pay {inr(priced.total)}</Button>
+            <Button size="lg" variant="dark" disabled={!valid} onClick={() => pay()} className="sm:min-w-56" icon="lock">Pay {inr(total)}</Button>
           </div>
-          <p className="mt-4 text-[11px] text-slate-400 flex items-center gap-1.5"><Icon name="shield" size={13} />Payment screen simulated for this prototype. Production will use the Razorpay checkout SDK.
+          {error && <div className="mt-3 rounded-xl bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
+          <p className="mt-4 text-[11px] text-slate-400 flex items-center gap-1.5"><Icon name="shield" size={13} />Simulated payment: no money is taken. Real payments will use a verified Razorpay integration.
             <button type="button" disabled={!valid} onClick={() => pay(true)} className="ml-auto underline hover:text-slate-600 disabled:no-underline disabled:opacity-50">Simulate a declined payment</button></p>
 
           {stage !== "form" && (
@@ -741,7 +772,7 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
               {stage === "processing" ? (
                 <div className="text-center"><div className="mx-auto h-14 w-14 rounded-full border-4 border-slate-200 border-t-navy-950 animate-spin" /><div className="mt-4 font-bold text-navy-950">Processing payment…</div><div className="text-sm text-slate-500">Please don't close this window</div></div>
               ) : stage === "failed" ? (
-                <div className="text-center pop-in max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-mgm-red text-white"><Icon name="x" size={34} strokeWidth={3} /></div><div className="mt-4 font-display text-xl font-bold text-navy-950">Payment declined</div><div className="text-sm text-slate-500">No money was taken and no booking was created (simulated).</div><Button className="mt-4" onClick={() => setStage("form")}>Try again</Button></div>
+                <div className="text-center pop-in max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-mgm-red text-white"><Icon name="x" size={34} strokeWidth={3} /></div><div className="mt-4 font-display text-xl font-bold text-navy-950">Payment declined</div><div className="text-sm text-slate-500">No money was taken (simulated). Your tickets stay held for a few minutes, so you can try again.</div><Button className="mt-4" onClick={() => setStage("form")}>Try again</Button></div>
               ) : (
                 <div className="text-center pop-in"><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-500 text-white"><Icon name="check" size={34} strokeWidth={3} /></div><div className="mt-4 font-display text-xl font-bold text-navy-950">Payment successful</div><div className="text-sm text-slate-500">Generating your e-tickets…</div></div>
               )}
@@ -754,63 +785,95 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
 }
 
 // ---------------- Confirmation ----------------
-function CancelPanel({ b }: { b: Booking }) {
-  const { update, toast } = useStore();
+function CancelPanel({ b, access, onChange }: { b: Booking; access: Access; onChange: (b: Booking) => void }) {
+  const { db, toast } = useStore();
   const [confirming, setConfirming] = useState(false);
-  const elig = cancellationEligibility(b);
-  const fee = cancellationFee(b);
+  const [busy, setBusy] = useState(false);
+  const s = db.settings;
+  const elig = cancellationEligibility(b, s);
+  const fee = cancellationFee(b, s);
   const r = b.refund;
+  const request = async () => {
+    setBusy(true);
+    try { onChange(await api<Booking>(`/api/bookings/${b.id}/cancellation-request`, { method: "POST", headers: bookingHeaders(access) })); toast("Cancellation requested — pending review"); }
+    catch (e) { toast((e as Error).message, "err"); }
+    setBusy(false); setConfirming(false);
+  };
   return (
     <div className="card p-5 text-sm">
       <h3 className="font-bold text-navy-950 mb-1">Cancellation & refund</h3>
-      <p className="text-slate-600 text-xs mb-3">Regular tickets can be cancelled up to 48 hours before the visit ({CANCEL_FEE_PCT}% fee). Offer tickets are non-refundable. Partial cancellations are not permitted.</p>
+      <p className="text-slate-600 text-xs mb-3">Regular tickets can be cancelled up to {s.cancelNoticeDays * 24} hours before the visit ({s.cancellationFeePct}% fee). Offer tickets are non-refundable. Partial cancellations are not permitted.</p>
       {r ? (
         <div className="rounded-xl border border-slate-200 p-3">
-          <Badge tone={r.status === "pending" ? "amber" : r.status === "rejected" ? "red" : "green"}>{r.status === "pending" ? "Cancellation requested · pending review" : r.status === "rejected" ? "Cancellation rejected" : "Refund processed"}</Badge>
-          <div className="mt-2 text-slate-600">{r.status === "rejected" ? <>Reason: {r.rejectionReason}. Your tickets remain valid.</> : <>{r.status === "pending" ? "Indicative refund" : "Refunded"}: <b>{inr(r.amount)}</b></>}</div>
+          <Badge tone={r.status === "pending" ? "amber" : r.status === "rejected" ? "red" : "green"}>{r.status === "pending" ? "Cancellation requested · pending review" : r.status === "rejected" ? "Cancellation rejected" : "Refund approved"}</Badge>
+          <div className="mt-2 text-slate-600">{r.status === "rejected" ? <>Reason: {r.rejectionReason}. Your tickets remain valid.</> : <>{r.status === "pending" ? "Indicative refund" : "Refund"}: <b>{inr(r.amount)}</b></>}</div>
         </div>
       ) : !elig.ok ? <div className="text-slate-500 text-xs">{elig.reason}</div> : confirming ? (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3">
-          <div className="text-navy-950">A {CANCEL_FEE_PCT}% fee ({inr(fee)}) applies. Indicative refund: <b>{inr(b.totals.total - fee)}</b>. Your tickets stay valid until the park approves the request. This is a simulated request — no money moves automatically.</div>
-          <div className="flex gap-2 mt-3"><Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Back</Button><Button size="sm" variant="danger" onClick={() => { update((d) => { requestCancellation(d, b.id); }); toast("Cancellation requested — pending review"); setConfirming(false); }}>Confirm cancellation request</Button></div>
+          <div className="text-navy-950">A {s.cancellationFeePct}% fee ({inr(fee)}) applies. Indicative refund: <b>{inr(b.totals.total - fee)}</b>. Your tickets stay valid until the park approves the request.</div>
+          <div className="flex gap-2 mt-3"><Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Back</Button><Button size="sm" variant="danger" disabled={busy} onClick={request}>Confirm cancellation request</Button></div>
         </div>
       ) : <Button variant="outline" className="w-full" icon="x" onClick={() => setConfirming(true)}>Request cancellation</Button>}
     </div>
   );
 }
 
-// Demo lookup by mobile number (no customer login exists in this prototype).
-function MyBookings({ onHome }: { onHome: () => void }) {
-  const { db } = useStore();
-  const [phone, setPhone] = useState(""); const [searched, setSearched] = useState("");
-  const [view, setView] = useState<string | null>(null);
-  const viewing = view && db.bookings.find((b) => b.id === view);
-  if (viewing) return <Confirmation booking={viewing} onHome={() => setView(null)} homeLabel="Back to my bookings" />;
-  const results = searched ? db.bookings.filter((b) => b.customer.phone.replace(/\D/g, "") === searched) : [];
-  const status = (b: Booking) => b.status === "cancelled" ? ["Cancelled", "red"] : b.refund?.status === "pending" ? ["Cancellation requested", "amber"] : b.refund?.status === "rejected" ? ["Cancellation rejected", "slate"] : b.payment.status === "paid" ? [b.visitDate < TODAY ? "Visited / expired" : "Confirmed", "green"] : [b.payment.status, "amber"];
+// Bookings are opened with their private booking link (shown after payment and kept on this device). Phone-number
+// lookup was removed: it exposed anyone's bookings. Production adds an OTP-verified lookup (see handover).
+function MyBookings({ onHome, open }: { onHome: () => void; open: Access | null }) {
+  const [rows, setRows] = useState<{ access: Access; booking?: Booking; error?: string }[]>(() => {
+    const mine = myBookings();
+    return (open ? [open, ...mine.filter((m) => m.ref !== open.ref)] : mine).map((access) => ({ access }));
+  });
+  const [view, setView] = useState<{ booking: Booking; access: Access } | null>(null);
+  const [linkText, setLinkText] = useState(""); const [linkErr, setLinkErr] = useState("");
+  const legacy = useMemo(() => legacyBookings() as Booking[], []);
+  useEffect(() => {
+    rows.forEach((r, i) => {
+      if (r.booking || r.error) return;
+      api<Booking>(`/api/bookings/${r.access.ref}`, { headers: bookingHeaders(r.access) })
+        .then((b) => { rememberBooking(r.access); setRows((x) => x.map((y, j) => (j === i ? { ...y, booking: b } : y))); if (open && r.access.ref === open.ref) setView({ booking: b, access: r.access }); })
+        .catch((e: ApiError) => setRows((x) => x.map((y, j) => (j === i ? { ...y, error: e.status === 404 ? "Link not valid" : e.message } : y))));
+    });
+  }, [rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (view) return <Confirmation booking={view.booking} access={view.access} onHome={() => setView(null)} homeLabel="Back to my bookings" />;
+  const status = (b: Booking) => b.status === "cancelled" ? ["Cancelled", "red"] : b.refund?.status === "pending" ? ["Cancellation requested", "amber"] : b.refund?.status === "rejected" ? ["Cancellation rejected", "slate"] : b.payment.status === "paid" ? [b.visitDate < TODAY ? "Visited / expired" : "Confirmed", "green"] : [b.payment.status === "pending" ? "Awaiting payment" : "Not paid", "amber"];
+  const addLink = () => {
+    const a = parseAccessLink(linkText);
+    if (!a) { setLinkErr("Paste the full booking link from your confirmation."); return; }
+    setLinkErr(""); setLinkText(""); setRows((x) => [{ access: a }, ...x.filter((y) => y.access.ref !== a.ref)]);
+  };
   return (
     <div className="max-w-3xl mx-auto fade-in">
-      <h2 className="font-display text-2xl font-bold text-navy-950 mb-1">My Bookings</h2>
-      <p className="text-sm text-slate-500 mb-4">Enter the mobile number used at booking. (Demo lookup — production will verify the number with a one-time code.)</p>
-      <form className="flex gap-2 mb-5" onSubmit={(e) => { e.preventDefault(); setSearched(phone); }}>
-        <input className={inputCls} placeholder="10-digit mobile number" inputMode="numeric" maxLength={10} value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))} aria-label="Mobile number" />
-        <Button type="submit" disabled={phone.length !== 10}>Search</Button><Button type="button" variant="ghost" onClick={onHome}>Back</Button>
+      <div className="flex items-center justify-between gap-3 mb-1"><h2 className="font-display text-2xl font-bold text-navy-950">My Bookings</h2><Button variant="ghost" onClick={onHome}>Back</Button></div>
+      <p className="text-sm text-slate-500 mb-4">Bookings made on this device are listed here. On another device, open the private booking link from your confirmation.</p>
+      <form className="flex gap-2 mb-5" onSubmit={(e) => { e.preventDefault(); addLink(); }}>
+        <input className={inputCls} placeholder="Paste your booking link" value={linkText} onChange={(e) => setLinkText(e.target.value)} aria-label="Booking link" />
+        <Button type="submit" disabled={!linkText.trim()}>Open</Button>
       </form>
-      {searched && results.length === 0 && <div className="text-center text-slate-500 py-10">No bookings found for this number.</div>}
-      <div className="space-y-3">{results.map((b) => { const [label, tone] = status(b); return (
-        <div key={b.id} className="card p-4 flex items-center justify-between gap-3">
-          <div><div className="font-mono font-bold text-navy-950">{b.id}</div><div className="text-xs text-slate-500">{fmtDate(b.visitDate)} · {b.tickets.length} tickets · {inr(b.totals.total)}</div></div>
-          <div className="flex items-center gap-2"><Badge tone={tone}>{label}</Badge><Button size="sm" variant="outline" onClick={() => setView(b.id)}>View</Button></div>
+      {linkErr && <div className="text-sm text-red-600 -mt-3 mb-4">{linkErr}</div>}
+      {rows.length === 0 && <div className="text-center text-slate-500 py-10">No bookings on this device yet.</div>}
+      <div className="space-y-3">{rows.map(({ access, booking: b, error }) => { const [label, tone] = b ? status(b) : [error || "Loading…", error ? "red" : "slate"]; return (
+        <div key={access.ref} className="card p-4 flex items-center justify-between gap-3">
+          <div><div className="font-mono font-bold text-navy-950">{access.ref}</div>{b && <div className="text-xs text-slate-500">{fmtDate(b.visitDate)} · {b.tickets.length || b.customer.visitors} tickets · {inr(b.totals.total)}</div>}</div>
+          <div className="flex items-center gap-2"><Badge tone={tone}>{label}</Badge>{b && <Button size="sm" variant="outline" onClick={() => setView({ booking: b, access })}>View</Button>}</div>
         </div>); })}</div>
+      {legacy.length > 0 && (
+        <div className="mt-8">
+          <h3 className="font-bold text-navy-950">Saved on this device only (earlier version)</h3>
+          <p className="text-xs text-slate-500 mb-3">These were made with the earlier version of this site and are stored only in this browser. They are not confirmed by MGM's ticketing system yet — please show this booking reference at the ticket counter or contact MGM so it can be verified.</p>
+          <div className="space-y-2">{legacy.map((b) => <div key={b.id} className="rounded-xl border border-dashed border-slate-300 p-3 text-sm flex justify-between"><span className="font-mono font-semibold">{b.id}</span><span className="text-slate-500">{fmtDate(b.visitDate)} · {inr(b.totals.total)}</span></div>)}</div>
+        </div>
+      )}
     </div>
   );
 }
 
-function Confirmation({ booking, onHome, homeLabel = "Return to homepage" }: { booking: Booking; onHome: () => void; homeLabel?: string }) {
+function Confirmation({ booking, access, onHome, homeLabel = "Return to homepage" }: { booking: Booking; access: Access; onHome: () => void; homeLabel?: string }) {
   const { db, toast } = useStore();
   const [view, setView] = useState<number | null>(null);
-  const [emailed, setEmailed] = useState(false);
-  const live = db.bookings.find((b) => b.id === booking.id) || booking;
+  const [live, setLive] = useState(booking);
+  const link = `${location.origin}${location.pathname}#booking/${access.ref}/${access.token}`;
   const counts: Record<string, number> = {};
   live.tickets.forEach((t) => (counts[t.label] = (counts[t.label] || 0) + 1));
   const offerNames = live.offerIds.map((id) => db.offers.find((o) => o.id === id)?.name).filter(Boolean);
@@ -845,7 +908,7 @@ function Confirmation({ booking, onHome, homeLabel = "Return to homepage" }: { b
                   <div className="mt-3 font-mono text-xs font-bold text-navy-900">{t.id}</div>
                   <div className={`mt-1 text-[11px] font-semibold ${t.status === "valid" ? "text-emerald-600" : t.status === "cancelled" ? "text-red-600" : "text-slate-400"}`}>{t.status === "used" ? "Used at " + t.gate : t.status === "cancelled" ? "Cancelled" : "Valid · not scanned"}</div>
                 </div>
-                <div className="border-l-2 border-dashed border-slate-200 p-3 grid place-items-center bg-slate-50"><QR text={qrPayload(t, live)} size={96} /></div>
+                <div className="border-l-2 border-dashed border-slate-200 p-3 grid place-items-center bg-slate-50"><QR text={t.qr || t.id} size={96} /></div>
               </button>
             ))}
           </div>
@@ -854,10 +917,10 @@ function Confirmation({ booking, onHome, homeLabel = "Return to homepage" }: { b
           <div className="card p-5 space-y-3">
             <Button className="w-full" icon="eye" onClick={() => setView(0)}>View tickets</Button>
             <Button className="w-full" variant="outline" icon="download" onClick={() => toast("PDF download is disabled in this preview – production generates a branded PDF", "warn")}>Download PDF</Button>
-            <Button className="w-full" variant="outline" icon="mail" disabled={emailed} onClick={() => { setEmailed(true); toast(`Simulated: tickets queued for ${live.customer.email}`); }}>{emailed ? "Email sent (simulated)" : "Email tickets"}</Button>
+            <Button className="w-full" variant="outline" icon="copy" onClick={() => { copyText(link); toast("Booking link copied — keep it to open your tickets on any device"); }}>Copy my booking link</Button>
             <Button className="w-full" variant="ghost" icon="home" onClick={onHome}>{homeLabel}</Button>
           </div>
-          <CancelPanel b={live} />
+          <CancelPanel b={live} access={access} onChange={setLive} />
           <div className="card p-5 text-sm">
             <h3 className="font-bold text-navy-950 mb-2">Booking details</h3>
             {Object.entries(counts).map(([k, v]) => <div key={k} className="flex justify-between py-0.5"><span className="text-slate-600">{k}</span><span className="font-semibold">× {v}</span></div>)}
@@ -867,17 +930,17 @@ function Confirmation({ booking, onHome, homeLabel = "Return to homepage" }: { b
             <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between"><span className="text-slate-600">Paid via {live.payment.method}</span><span className="font-bold">{inr(live.totals.total)}</span></div>
             <div className="text-[11px] text-slate-400 mt-1 font-mono">{live.payment.txnId}</div>
           </div>
-          <div className="rounded-2xl bg-mgm-yellow/20 border border-mgm-yellow p-4 text-sm text-navy-900 flex gap-2"><Icon name="scan" className="mt-0.5" /><div><b>Try it:</b> open <b>Staff Scanner</b> from the prototype bar above and scan these tickets. {live.visitDate !== TODAY && <span>They'll show "wrong visit date" unless you booked for today ({fmtShort(TODAY)}).</span>}</div></div>
+          <div className="rounded-2xl bg-mgm-yellow/20 border border-mgm-yellow p-4 text-sm text-navy-900 flex gap-2"><Icon name="scan" className="mt-0.5" /><div><b>Keep your booking link.</b> It opens these tickets on any device; anyone with it can see this booking. {live.visitDate !== TODAY && <span>Tickets scan only on {fmtShort(live.visitDate)}.</span>}</div></div>
         </aside>
       </div>
       <Modal open={view !== null} onClose={() => setView(null)} title={`Ticket ${view !== null ? view + 1 : ""} of ${live.tickets.length}`}>
         {view !== null && live.tickets[view] && (() => { const t = live.tickets[view]; return (
           <div className="text-center">
             <div className="rounded-2xl hero-mesh text-white p-5 text-left"><Logo light /><div className="mt-4 flex justify-between text-sm"><div><div className="text-white/75 text-xs">Ticket</div><div className="font-bold">{t.label}</div></div><div className="text-right"><div className="text-white/75 text-xs">Visit</div><div className="font-bold">{fmtDate(live.visitDate, { day: "numeric", month: "short", year: "numeric" })}</div></div></div></div>
-            <div className="mx-auto mt-5 inline-block rounded-2xl border border-slate-200 p-3"><QR text={qrPayload(t, live)} size={220} /></div>
+            <div className="mx-auto mt-5 inline-block rounded-2xl border border-slate-200 p-3"><QR text={t.qr || t.id} size={220} /></div>
             <div className="mt-3 font-mono font-bold text-navy-950">{t.id}</div>
             <div className="text-xs text-slate-500">Booking {live.id} · {live.customer.name}</div>
-            <div className="text-[10px] text-slate-400 mt-1 break-all font-mono">QR ref: {qrPayload(t, live)}</div>
+            <div className="text-[10px] text-slate-400 mt-1 break-all font-mono">QR ref: {t.qr || t.id}</div>
             <div className="mt-5 flex justify-between"><Button variant="outline" icon="left" disabled={view === 0} onClick={() => setView(view - 1)}>Prev</Button><Button variant="outline" iconRight="right" disabled={view === live.tickets.length - 1} onClick={() => setView(view + 1)}>Next</Button></div>
           </div>
         ); })()}

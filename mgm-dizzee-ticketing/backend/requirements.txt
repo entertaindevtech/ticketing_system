@@ -4,6 +4,7 @@ sqlalchemy>=2.0,<2.2
 alembic>=1.13,<2
 psycopg[binary]>=3.2,<4
 geoip2>=4.8,<6
+argon2-cffi>=23.1,<26  # Argon2id staff password hashing
 # tests
 pytest>=8,<10
 httpx>=0.27,<1

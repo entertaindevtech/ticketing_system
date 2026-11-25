@@ -1,4 +1,6 @@
-// Shared prototype state, mock data and the offer/pricing engine.
+// Shared types, the catalog seed (used by tests and the pricing-parity fixture), the price/offer engine used to
+// preview prices while a cart is built, and display-only eligibility rules. The server (backend/) is the authority:
+// it re-prices every booking, takes payment, issues tickets, validates scans and applies cancellations/changes.
 export type TicketCat = {
   id: string; name: string; kind: "general" | "fasttrack"; audience: "adult" | "child";
   basePrice: number; description: string; eligibility: string; active: boolean; dailyLimit: number;
@@ -17,7 +19,7 @@ export type Offer = {
 };
 export type Addon = { id: string; name: string; description: string; price: number; icon: string; tag?: string };
 export type DateCfg = { enabled?: boolean; blackout?: boolean; capacity?: number; priceAdj?: number; note?: string };
-export type Ticket = { id: string; catId: string; label: string; status: "valid" | "used" | "cancelled"; scannedAt?: string; gate?: string; offerId?: string; complimentary?: boolean };
+export type Ticket = { id: string; catId: string; label: string; status: "valid" | "used" | "cancelled"; scannedAt?: string | null; gate?: string | null; offerId?: string | null; complimentary?: boolean; qr?: string | null };
 export type PayStatus = "paid" | "pending" | "failed" | "refunded";
 export type Booking = {
   id: string; createdAt: string; visitDate: string;
@@ -27,19 +29,24 @@ export type Booking = {
   totals: { subtotal: number; discount: number; addons: number; tax: number; total: number; complimentary: number };
   payment: { txnId: string; method: string; status: PayStatus; gateway: string; at: string };
   status: "confirmed" | "cancelled"; tickets: Ticket[]; live?: boolean; refund?: Refund;
-  counterSale?: boolean; modifiedAt?: string; modifications?: Modification[];
+  counterSale?: boolean; modifiedAt?: string | null; modifications?: Modification[];
+  // server state
+  state?: "pending_payment" | "confirmed" | "cancelled" | "expired"; channel?: "web" | "counter"; origin?: string; holdExpiresAt?: string | null;
+  refunds?: { id: number; amount: number; fee: number; status: string; reason: string | null; createdAt: string; processedAt: string | null; kind: string }[];
+  differences?: { id: number; amount: number; status: string; method: string | null; at: string }[];
 };
 // status absent = legacy instant admin refund (always completed).
 export type Refund = {
   amount: number; at: string; reason: string; status?: "pending" | "approved" | "rejected"; deduction?: number;
-  requestedAt?: string; approvedAt?: string; rejectedAt?: string; rejectionReason?: string;
+  requestedAt?: string; approvedAt?: string | null; rejectedAt?: string | null; rejectionReason?: string | null;
 };
 export type Modification = { at: string; by: string; previousVisitDate: string; visitDate: string; previousTotal: number; newTotal: number };
 export type Notice = { id: string; type: string; message: string; ref: string; at: string; read: boolean };
 export type AuditEntry = { id: string; type: string; message: string; ref: string; at: string; actor: string };
 export type Scan = { id: string; at: string; ticketId: string; bookingId: string; gate: string; staffId: string; result: "valid" | "duplicate" | "invalid"; reason: string };
-export type Staff = { id: string; name: string; password: string; gate: string; role: string; active: boolean; phone: string };
-export type Settings = { gst: number; openTime: string; closeTime: string; parkName: string; phone: string; email: string; defaultCapacity: number };
+export type Staff = { id: string; name: string; gate: string; role: string; roles?: string[]; active: boolean; phone: string; lastLoginAt?: string | null };
+export type Settings = { gst: number; openTime: string; closeTime: string; parkName: string; phone: string; email: string; defaultCapacity: number;
+  saleStart?: string; saleEnd?: string; cancellationFeePct: number; cancelNoticeDays: number; holdMinutes?: number };
 export type DB = {
   tickets: TicketCat[]; offers: Offer[]; addons: Addon[]; dateCfg: Record<string, DateCfg>;
   bookings: Booking[]; scans: Scan[]; staff: Staff[]; settings: Settings; version: number;
@@ -47,16 +54,21 @@ export type DB = {
 };
 
 // ---------- dates ----------
-export const MIN_DATE = "2026-11-01";
-export const MAX_DATE = "2026-12-31";
+export let MIN_DATE = "2026-11-01";
+export let MAX_DATE = "2026-12-31";
 const pad = (n: number) => String(n).padStart(2, "0");
 export const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const parseISO = (s: string) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 export const addDays = (s: string, n: number) => { const d = parseISO(s); d.setDate(d.getDate() + n); return iso(d); };
 export const dow = (s: string) => parseISO(s).getDay();
 export const isWeekend = (s: string) => { const w = dow(s); return w === 0 || w === 6; };
-const realToday = iso(new Date());
-export const TODAY = realToday >= MIN_DATE && realToday <= "2026-12-24" ? realToday : "2026-11-19";
+// The park's "today" and sale window come from the server (GET /api/catalog), never from this device's clock.
+export let TODAY = iso(new Date());
+export function setToday(today: string, settings?: Partial<Settings>) {
+  TODAY = today;
+  if (settings?.saleStart) MIN_DATE = settings.saleStart;
+  if (settings?.saleEnd) MAX_DATE = settings.saleEnd;
+}
 export const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 export const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const fmtDate = (s: string, o: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short", year: "numeric" }) =>
@@ -70,9 +82,6 @@ export function datesBetween(a: string, b: string) { const out: string[] = []; f
 // ---------- ids ----------
 const ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const rid = (n: number, rnd: () => number = Math.random) => Array.from({ length: n }, () => ALPH[Math.floor(rnd() * ALPH.length)]).join("");
-export function sig(s: string) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36).toUpperCase().slice(0, 4).padStart(4, "0"); }
-export const qrPayload = (t: Ticket, b: Booking) => { const base = `MGMDW1|${t.id}|${b.id}|${b.visitDate}`; return `${base}|${sig(base)}`; };
-
 // ---------- seed ----------
 const T = (id: string, name: string, kind: TicketCat["kind"], audience: TicketCat["audience"], basePrice: number, description: string, eligibility: string): TicketCat =>
   ({ id, name, kind, audience, basePrice, description, eligibility, active: true, dailyLimit: kind === "fasttrack" ? 400 : 3000,
@@ -136,108 +145,14 @@ export const seedAddons = (): Addon[] => [
   { id: "cabana", name: "Wave Pool Cabana", description: "Private shaded cabana for up to 6 guests with towels.", price: 1499, icon: "cabana", tag: "Premium" },
 ];
 
-export const seedStaff = (): Staff[] => [
-  { id: "STF1024", name: "Arun Kumar", password: "mgm123", gate: "Main Gate A", role: "Entry Supervisor", active: true, phone: "98400 11223" },
-  { id: "STF1031", name: "Priya Lakshmi", password: "mgm123", gate: "Main Gate B", role: "Ticket Checker", active: true, phone: "98400 44556" },
-  { id: "STF1045", name: "Mohammed Riyaz", password: "mgm123", gate: "Water Park Gate", role: "Ticket Checker", active: true, phone: "98400 77889" },
-  { id: "STF1052", name: "Deepa S", password: "mgm123", gate: "Fast Track Lane", role: "Ticket Checker", active: false, phone: "98400 99001" },
-];
+export const defaultSettings = (): Settings => ({ gst: 18, openTime: "10:30", closeTime: "18:30", parkName: "MGM Dizzee World", phone: "+91 44 2747 2434", email: "bookings@mgmdizzeeworld.com", defaultCapacity: 4000, cancellationFeePct: 25, cancelNoticeDays: 2 });
 
-function mulberry(a: number) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-
-const FIRST = ["Karthik","Divya","Suresh","Anitha","Vignesh","Meena","Rahul","Sneha","Arjun","Lakshmi","Praveen","Kavya","Ganesh","Nithya","Harish","Revathi","Sanjay","Pooja","Manoj","Swathi","Ajay","Deepika","Ramesh","Janani","Vikram","Aishwarya","Naveen","Keerthana","Senthil","Bhavana"];
-const LAST = ["R","Kumar","Subramanian","Iyer","Raj","Natarajan","Krishnan","Menon","Reddy","Pillai","S","Venkatesh","Murugan","Rao","Balaji"];
-
-export function seedBookings(tickets: TicketCat[], offers: Offer[], settings: Settings): { bookings: Booking[]; scans: Scan[] } {
-  const rnd = mulberry(20261119);
-  const bookings: Booking[] = [];
-  const scans: Scan[] = [];
-  const gates = ["Main Gate A", "Main Gate B", "Water Park Gate", "Fast Track Lane"];
-  const visitDays = datesBetween(MIN_DATE, MAX_DATE);
-  for (const vd of visitDays) {
-    if (vd === "2026-11-24") continue; // maintenance day
-    const past = vd < TODAY;
-    const isToday = vd === TODAY;
-    const far = vd > addDays(TODAY, 21);
-    let n = isWeekend(vd) ? 5 : 2;
-    if (vd >= "2026-12-20") n += 2;
-    if (far) n = Math.max(1, Math.floor(n / 2));
-    n += Math.floor(rnd() * 3);
-    for (let i = 0; i < n; i++) {
-      const name = `${FIRST[Math.floor(rnd() * FIRST.length)]} ${LAST[Math.floor(rnd() * LAST.length)]}`;
-      const phone = `9${Math.floor(rnd() * 9)}${String(Math.floor(rnd() * 1e8)).padStart(8, "0")}`;
-      const leadDays = 1 + Math.floor(rnd() * 12);
-      let created = addDays(vd, -leadDays);
-      if (created > TODAY) created = addDays(TODAY, -Math.floor(rnd() * rnd() * 24));
-      const cart: Cart = { tickets: {}, offers: {}, addons: {}, coupon: "" };
-      const r = rnd();
-      const ctx = { tickets, offers, dateCfg: {}, settings };
-      const eligible = eligibleOffers(offers, vd, created).filter((o) => !o.coupon);
-      if (r < 0.35 && eligible.length) {
-        const o = eligible[Math.floor(rnd() * eligible.length)];
-        cart.offers[o.id] = o.type === "percent" || o.type === "flat" ? Math.max(o.minQty, 1 + Math.floor(rnd() * 3)) : 1;
-      } else {
-        cart.tickets.ga = 1 + Math.floor(rnd() * 3);
-        if (rnd() < 0.6) cart.tickets.gc = 1 + Math.floor(rnd() * 2);
-        if (rnd() < 0.25) { cart.tickets.fa = 1 + Math.floor(rnd() * 2); if (rnd() < 0.5) delete cart.tickets.ga; if (rnd() < 0.5) { cart.tickets.fc = 1; delete cart.tickets.gc; } }
-        if (rnd() < 0.2) cart.coupon = "MGM30";
-      }
-      if (rnd() < 0.45) cart.addons.food = 1 + Math.floor(rnd() * 3);
-      if (rnd() < 0.3) cart.addons.swim = 1 + Math.floor(rnd() * 2);
-      if (rnd() < 0.2) cart.addons.locker = 1;
-      const pr = priceCart(cart, vd, ctx, created);
-      if (pr.ticketCount === 0) continue;
-      const pRoll = rnd();
-      const payStatus: PayStatus = pRoll < 0.05 ? "pending" : pRoll < 0.08 ? "failed" : pRoll < 0.1 ? "refunded" : "paid";
-      const b = buildBooking(cart, pr, vd, { name, phone, email: `${name.split(" ")[0].toLowerCase()}${Math.floor(rnd() * 90 + 10)}@gmail.com`, visitors: pr.ticketCount, notes: "" },
-        ["UPI", "Card", "Net Banking"][Math.floor(rnd() * 3)], rnd, created + "T" + pad(8 + Math.floor(rnd() * 13)) + ":" + pad(Math.floor(rnd() * 60)) + ":00");
-      b.payment.status = payStatus;
-      if (payStatus === "refunded") { b.status = "cancelled"; b.tickets.forEach((t) => (t.status = "cancelled")); b.refund = { amount: b.totals.total, at: b.createdAt, reason: "Customer requested cancellation" }; }
-      if (payStatus === "failed") b.tickets.forEach((t) => (t.status = "cancelled"));
-      if ((past || (isToday && rnd() < 0.5)) && payStatus === "paid") {
-        b.tickets.forEach((t) => {
-          if (past && rnd() < 0.06) return; // no-show
-          const gate = gates[Math.floor(rnd() * 3)];
-          const at = `${vd}T${pad(10 + Math.floor(rnd() * 6))}:${pad(Math.floor(rnd() * 60))}:00`;
-          t.status = "used"; t.scannedAt = at; t.gate = gate;
-          scans.push({ id: rid(8, rnd), at, ticketId: t.id, bookingId: b.id, gate, staffId: "STF1024", result: "valid", reason: "Entry approved" });
-          if (rnd() < 0.03) scans.push({ id: rid(8, rnd), at: at.replace(/:00$/, ":40"), ticketId: t.id, bookingId: b.id, gate, staffId: "STF1031", result: "duplicate", reason: "Already used" });
-        });
-      }
-      if (past && rnd() < 0.08) scans.push({ id: rid(8, rnd), at: `${vd}T11:${pad(Math.floor(rnd() * 60))}:00`, ticketId: "UNKNOWN", bookingId: "-", gate: gates[0], staffId: "STF1024", result: "invalid", reason: "Invalid QR code" });
-      bookings.push(b);
-    }
-  }
-  // dedicated demo tickets for the scanner
-  const mk = (name: string, vd: string, tweak: (b: Booking) => void) => {
-    const cart: Cart = { tickets: { ga: 2 }, offers: {}, addons: {}, coupon: "" };
-    const pr = priceCart(cart, vd, { tickets, offers, dateCfg: {}, settings }, addDays(TODAY, -3));
-    const b = buildBooking(cart, pr, vd, { name, phone: "9840012345", email: "demo@mgmdizzeeworld.com", visitors: 2, notes: "Scanner demo" }, "UPI", rnd, addDays(TODAY, -3) + "T10:00:00");
-    tweak(b); bookings.push(b);
-  };
-  mk("Demo · Valid Today", TODAY, () => {});
-  mk("Demo · Already Used", TODAY, (b) => { b.tickets.forEach((t) => { t.status = "used"; t.scannedAt = `${TODAY}T10:12:00`; t.gate = "Main Gate B"; }); });
-  mk("Demo · Future Date", addDays(TODAY, 9), () => {});
-  mk("Demo · Payment Pending", TODAY, (b) => { b.payment.status = "pending"; });
-  mk("Demo · Cancelled", TODAY, (b) => { b.status = "cancelled"; b.payment.status = "refunded"; b.tickets.forEach((t) => (t.status = "cancelled")); b.refund = { amount: b.totals.total, at: b.createdAt, reason: "Customer requested cancellation" }; });
-  mk("Demo · Expired", addDays(TODAY, -4), () => {});
-  bookings.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return { bookings, scans };
-}
-
-export const defaultSettings = (): Settings => ({ gst: 18, openTime: "10:30", closeTime: "18:30", parkName: "MGM Dizzee World", phone: "+91 44 2747 2434", email: "bookings@mgmdizzeeworld.com", defaultCapacity: 4000 });
-
-export function seedDB(): DB {
-  const tickets = seedTickets(), offers = seedOffers(), settings = defaultSettings();
-  const { bookings, scans } = seedBookings(tickets, offers, settings);
-  const dateCfg: Record<string, DateCfg> = {
-    "2026-11-24": { enabled: false, note: "Annual ride maintenance" },
-    "2026-12-03": { blackout: true, note: "Private corporate event" },
-    "2026-12-25": { priceAdj: 25, note: "Christmas Day" },
-    "2026-12-31": { priceAdj: 30, note: "New Year's Eve" },
-  };
-  return { tickets, offers, addons: seedAddons(), dateCfg, bookings, scans, staff: seedStaff(), settings, version: 3 };
-}
+export const SEED_DATE_CFG = (): Record<string, DateCfg> => ({
+  "2026-11-24": { enabled: false, note: "Annual ride maintenance" },
+  "2026-12-03": { blackout: true, note: "Private corporate event" },
+  "2026-12-25": { priceAdj: 25, note: "Christmas Day" },
+  "2026-12-31": { priceAdj: 30, note: "New Year's Eve" },
+});
 
 // ---------- date & price engine ----------
 export type Ctx = { tickets: TicketCat[]; offers: Offer[]; dateCfg: Record<string, DateCfg>; settings: Settings };
@@ -362,120 +277,20 @@ export function priceCart(cart: Cart, d: string, ctx: Ctx, bookedOn = TODAY, add
   return { lines, ticketGross, offerSavings, couponDiscount, couponOffer, couponError, addonsTotal, subtotal, taxable, tax, total: taxable + tax, complimentary, ticketCount, issues };
 }
 
-export function buildBooking(cart: Cart, pr: Priced, visitDate: string, customer: Booking["customer"], method: string, rnd: () => number = Math.random, createdAt = nowStamp(), ctx?: Ctx): Booking {
-  const id = "MGM-" + rid(6, rnd);
-  const tickets: Ticket[] = [];
-  const catName = (cid: string) => (ctx?.tickets || seedTickets()).find((t) => t.id === cid)?.name || cid;
-  for (const l of pr.lines) {
-    if (l.kind === "ticket") for (let i = 0; i < l.qty; i++) tickets.push({ id: "TKT-" + rid(8, rnd), catId: l.refId, label: l.label, status: "valid" });
-    if (l.kind === "offer") {
-      const o = (ctx?.offers || seedOffers()).find((x) => x.id === l.refId);
-      if (!o) continue;
-      const contents: { catId: string; qty: number; free?: number }[] =
-        o.type === "package" ? Object.entries(o.packageContents).map(([catId, qty]) => ({ catId, qty }))
-        : o.type === "bxgy" ? [{ catId: o.categories[0], qty: o.buyX + o.getY, free: o.getY }] : [{ catId: o.categories[0], qty: 1 }];
-      for (let u = 0; u < l.qty; u++) for (const c of contents) for (let i = 0; i < c.qty; i++)
-        tickets.push({ id: "TKT-" + rid(8, rnd), catId: c.catId, label: catName(c.catId), status: "valid", offerId: o.id, complimentary: c.free ? i >= c.qty - c.free : false });
-    }
-  }
-  return {
-    id, createdAt, visitDate, customer,
-    items: pr.lines.map((l) => ({ label: l.kind === "offer" ? `${l.label} (${l.detail})` : l.label, qty: l.qty, amount: l.amount, kind: l.kind, refId: l.refId })),
-    offerIds: [...pr.lines.filter((l) => l.kind === "offer").map((l) => l.refId), ...(pr.couponOffer ? [pr.couponOffer.id] : [])],
-    coupon: pr.couponOffer ? pr.couponOffer.coupon : "",
-    totals: { subtotal: pr.subtotal, discount: pr.offerSavings + pr.couponDiscount, addons: pr.addonsTotal, tax: pr.tax, total: pr.total, complimentary: pr.complimentary },
-    payment: { txnId: "pay_" + rid(14, rnd), method, status: "paid", gateway: "Razorpay", at: createdAt },
-    status: "confirmed", tickets,
-  };
-}
-
-// ---------- scanner ----------
-export type ScanResult = { kind: "valid" | "duplicate" | "invalid"; title: string; reason: string; ticket?: Ticket; booking?: Booking; previous?: { at: string; gate: string } };
-export function evaluateScan(raw: string, db: DB): ScanResult {
-  const code = raw.trim();
-  let ticketId = code.toUpperCase();
-  if (code.startsWith("MGMDW1|")) {
-    const parts = code.split("|");
-    if (parts.length !== 5 || sig(parts.slice(0, 4).join("|")) !== parts[4]) return { kind: "invalid", title: "INVALID TICKET", reason: "Invalid QR code – signature check failed" };
-    ticketId = parts[1];
-  }
-  let booking: Booking | undefined, ticket: Ticket | undefined;
-  for (const b of db.bookings) { const t = b.tickets.find((x) => x.id === ticketId); if (t) { booking = b; ticket = t; break; } }
-  if (!ticket || !booking) return { kind: "invalid", title: "INVALID TICKET", reason: "Invalid QR code – ticket not found" };
-  const base = { ticket, booking };
-  if (booking.payment.status === "pending" || booking.payment.status === "failed") return { ...base, kind: "invalid", title: "INVALID TICKET", reason: "Payment not completed" };
-  if (ticket.status === "cancelled" || booking.status === "cancelled") return { ...base, kind: "invalid", title: "INVALID TICKET", reason: "Ticket cancelled" };
-  if (ticket.status === "used") return { ...base, kind: "duplicate", title: "THIS TICKET HAS ALREADY BEEN USED.", reason: "Already used", previous: { at: ticket.scannedAt || "", gate: ticket.gate || "" } };
-  if (booking.visitDate < TODAY) return { ...base, kind: "invalid", title: "INVALID TICKET", reason: `Ticket expired – visit date was ${fmtShort(booking.visitDate)}` };
-  if (booking.visitDate > TODAY) return { ...base, kind: "invalid", title: "INVALID TICKET", reason: `Wrong visit date – valid on ${fmtDate(booking.visitDate)}` };
-  return { ...base, kind: "valid", title: "VALID TICKET", reason: "Entry approved" };
-}
-
-// ---------- notifications & activity log ----------
-// Demonstration records kept in the same store; not an immutable security audit trail.
-export function logEvent(d: DB, type: string, message: string, ref: string, actor: string, at = nowStamp()) {
-  const id = () => rid(6);
-  (d.notifications ||= []).unshift({ id: "NTF-" + id(), type, message, ref, at, read: false });
-  (d.auditLog ||= []).unshift({ id: "AUD-" + id(), type, message, ref, at, actor });
-  if (d.notifications.length > 500) d.notifications.length = 500; // keep localStorage bounded
-  if (d.auditLog.length > 2000) d.auditLog.length = 2000;
-}
-
-// ---------- cancellation & refunds ----------
-export const CANCEL_FEE_PCT = 10;
-export const CANCEL_NOTICE_DAYS = 2; // "up to 48 hours before the visit"
+// ---------- cancellation & modification eligibility (display only; the server enforces the same rules) ----------
 export const isRefunded = (b: Booking) => !!b.refund && (!b.refund.status || b.refund.status === "approved");
 
-export function cancellationEligibility(b: Booking, today = TODAY): { ok: boolean; reason: string } {
+export function cancellationEligibility(b: Booking, s: Pick<Settings, "cancelNoticeDays">, today = TODAY): { ok: boolean; reason: string } {
   if (b.status === "cancelled") return { ok: false, reason: "This booking is already cancelled." };
   if (b.refund?.status === "pending") return { ok: false, reason: "A cancellation request is already pending review." };
   if (b.refund) return { ok: false, reason: "This booking's cancellation has already been reviewed." };
   if (b.payment.status !== "paid") return { ok: false, reason: "Only paid bookings can be cancelled." };
   if (b.offerIds.length) return { ok: false, reason: "This booking used an offer and is not eligible for cancellation." };
   if (b.tickets.some((t) => t.status === "used")) return { ok: false, reason: "Tickets from this booking have already been used." };
-  if (b.visitDate < addDays(today, CANCEL_NOTICE_DAYS)) return { ok: false, reason: "Less than 48 hours remain before the visit — not eligible for cancellation." };
+  if (b.visitDate < addDays(today, s.cancelNoticeDays)) return { ok: false, reason: `Less than ${s.cancelNoticeDays * 24} hours remain before the visit — not eligible for cancellation.` };
   return { ok: true, reason: "" };
 }
-export const cancellationFee = (b: Booking) => Math.round((b.totals.total * CANCEL_FEE_PCT) / 100);
-
-/** Customer request; the booking stays valid until an admin approves it. */
-export function requestCancellation(d: DB, id: string, at = nowStamp()): boolean {
-  const b = d.bookings.find((x) => x.id === id);
-  if (!b || !cancellationEligibility(b).ok) return false;
-  const deduction = cancellationFee(b);
-  b.refund = { amount: b.totals.total - deduction, deduction, status: "pending", requestedAt: at, at, reason: "Customer requested cancellation" };
-  logEvent(d, "cancellation", `Cancellation requested for ${id}`, id, "Customer", at);
-  return true;
-}
-
-function cancelTickets(b: Booking) { b.status = "cancelled"; b.payment.status = "refunded"; b.tickets.forEach((t) => { if (t.status !== "used") t.status = "cancelled"; }); }
-
-export function approveRefund(d: DB, id: string, at = nowStamp()): boolean {
-  const b = d.bookings.find((x) => x.id === id);
-  if (!b || b.refund?.status !== "pending" || b.status === "cancelled") return false;
-  cancelTickets(b);
-  Object.assign(b.refund, { status: "approved", approvedAt: at, at });
-  logEvent(d, "refund", `Refund of ${inr(b.refund.amount)} approved for ${id}`, id, "Admin", at);
-  return true;
-}
-
-export function rejectRefund(d: DB, id: string, reason: string, at = nowStamp()): boolean {
-  const b = d.bookings.find((x) => x.id === id);
-  if (!b || b.refund?.status !== "pending") return false;
-  Object.assign(b.refund, { status: "rejected", rejectedAt: at, rejectionReason: reason.trim() || "Not eligible per policy" });
-  logEvent(d, "refund", `Refund rejected for ${id}`, id, "Admin", at);
-  return true;
-}
-
-/** The pre-existing one-step admin "Cancel & refund" (keeps the 10% fee). */
-export function adminCancel(d: DB, id: string, at = nowStamp()): boolean {
-  const b = d.bookings.find((x) => x.id === id);
-  if (!b || b.status === "cancelled" || b.payment.status !== "paid") return false;
-  cancelTickets(b);
-  b.refund = { amount: b.totals.total - cancellationFee(b), deduction: cancellationFee(b), status: "approved", approvedAt: at, at, reason: `Cancelled by admin (${CANCEL_FEE_PCT}% fee)` };
-  logEvent(d, "refund", `Booking ${id} cancelled and refunded by admin`, id, "Admin", at);
-  return true;
-}
+export const cancellationFee = (b: Booking, s: Pick<Settings, "cancellationFeePct">) => Math.round((b.totals.total * s.cancellationFeePct) / 100);
 
 // ---------- booking modification ----------
 export function modificationEligibility(b: Booking, d: Pick<DB, "dateCfg">): { ok: boolean; reason: string } {
@@ -486,34 +301,4 @@ export function modificationEligibility(b: Booking, d: Pick<DB, "dateCfg">): { o
   if (b.tickets.some((t) => t.status === "used")) return { ok: false, reason: "Tickets have already been used at the gate." };
   if (b.visitDate < TODAY) return { ok: false, reason: "The visit date has passed." };
   return { ok: true, reason: "" };
-}
-
-/** Re-prices a regular booking. Existing ticket IDs (and their QR codes) are kept wherever the category still has tickets. */
-export function modifyBooking(d: DB, id: string, visitDate: string, ticketQty: Record<string, number>, addonQty: Record<string, number>, at = nowStamp()): { ok: boolean; error: string } {
-  const b = d.bookings.find((x) => x.id === id);
-  if (!b) return { ok: false, error: "Booking not found." };
-  const elig = modificationEligibility(b, d);
-  if (!elig.ok) return { ok: false, error: elig.reason };
-  const ds = dateStatus(visitDate, d);
-  if (!ds.open) return { ok: false, error: `${fmtShort(visitDate)} is not available: ${ds.reason}.` };
-  const ctx: Ctx = { tickets: d.tickets, offers: d.offers, dateCfg: d.dateCfg, settings: d.settings };
-  const pr = priceCart({ tickets: ticketQty, offers: {}, addons: addonQty, coupon: "" }, visitDate, ctx, TODAY, d.addons);
-  if (pr.ticketCount === 0) return { ok: false, error: "A booking needs at least one ticket." };
-
-  const keep: Ticket[] = [];
-  for (const l of pr.lines) if (l.kind === "ticket") {
-    const existing = b.tickets.filter((t) => t.catId === l.refId && t.status === "valid");
-    for (let i = 0; i < l.qty; i++) keep.push(existing[i] || { id: "TKT-" + rid(8), catId: l.refId, label: l.label, status: "valid" });
-  }
-  const previousTotal = b.totals.total, previousVisitDate = b.visitDate;
-  b.tickets = keep;
-  b.visitDate = visitDate;
-  b.customer.visitors = pr.ticketCount;
-  b.items = pr.lines.map((l) => ({ label: l.label, qty: l.qty, amount: l.amount, kind: l.kind, refId: l.refId }));
-  b.totals = { subtotal: pr.subtotal, discount: pr.offerSavings + pr.couponDiscount, addons: pr.addonsTotal, tax: pr.tax, total: pr.total, complimentary: pr.complimentary };
-  b.modifiedAt = at;
-  (b.modifications ||= []).push({ at, by: "Admin", previousVisitDate, visitDate, previousTotal, newTotal: pr.total });
-  const diff = pr.total - previousTotal;
-  logEvent(d, "modification", `Booking ${id} modified (${diff === 0 ? "no price change" : diff > 0 ? `collect ${inr(diff)}` : `refund ${inr(-diff)}`})`, id, "Admin", at);
-  return { ok: true, error: "" };
 }

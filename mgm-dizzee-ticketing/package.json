@@ -8,8 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "build:static": "vite build && node scripts/build-static.mjs",
-    "test": "node --test \"tests/*.test.ts\""
+    "test": "node --test \"tests/*.test.ts\"",
+    "pricing:fixture": "node scripts/pricing-fixture.ts"
   },
   "dependencies": {
     "react": "^19.2.0",

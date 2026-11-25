@@ -5,7 +5,7 @@ import { Icon, StoreProvider } from "./ui";
 import CustomerApp from "./customer";
 import AdminApp from "./admin";
 import StaffApp from "./staff";
-import { captureVisit, flushOutbox } from "./referral";
+import { captureVisit, dropRetiredOutbox } from "./referral";
 
 type App = "customer" | "admin" | "staff";
 const fromHash = (): App => { const h = location.hash.replace("#", ""); return h === "admin" || h === "staff" ? h : "customer"; };
@@ -26,7 +26,7 @@ function Shell() {
             </button>
           ))}
         </div>
-        <span className="hidden lg:block ml-auto text-[11px] text-white/45">Illustrative demo data · no real payments · changes saved in this browser</span>
+        <span className="hidden lg:block ml-auto text-[11px] text-white/45">Payments are simulated · no real money is taken</span>
       </div>
       {app === "customer" && <CustomerApp />}
       {app === "admin" && <AdminApp />}
@@ -35,5 +35,6 @@ function Shell() {
   );
 }
 
-void captureVisit().finally(flushOutbox);
+dropRetiredOutbox();
+void captureVisit();
 createRoot(document.getElementById("root")!).render(<StoreProvider><Shell /></StoreProvider>);
