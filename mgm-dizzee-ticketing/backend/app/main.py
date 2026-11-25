@@ -16,6 +16,7 @@ from .api import admin, events, public
 from .api_admin_booking import customer_lifecycle, staff_bookings
 from .api_booking import booking_api
 from .api_shop import shop
+from .api_staff import staff_api
 from .config import Settings, get_settings
 from .db import make_engine, make_sessionmaker
 from .geo import GeoLookup
@@ -54,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(booking_api)
     app.include_router(customer_lifecycle)
     app.include_router(staff_bookings)
+    app.include_router(staff_api)
     app.include_router(events)
     app.include_router(admin)
 

@@ -438,3 +438,25 @@ class BookingModification(Base):
     settlement: Mapped[str] = mapped_column(String(8), nullable=False)  # none | collect | refund
     before: Mapped[dict] = mapped_column(JSON, nullable=False)
     after: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+# ---------- gate (milestone D) ----------
+class GateScan(Base):
+    """Every scan attempt at a gate, valid or not. (device_id, client_scan_id) makes a scanner's network retry
+    return the original result instead of counting twice."""
+    __tablename__ = "gate_scans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    ticket_id: Mapped[int | None] = mapped_column(ForeignKey("tickets.id"), index=True)
+    ticket_code: Mapped[str | None] = mapped_column(String(20))
+    booking_ref: Mapped[str | None] = mapped_column(String(16))
+    gate: Mapped[str] = mapped_column(String(60), nullable=False)
+    staff_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(64))
+    client_scan_id: Mapped[str | None] = mapped_column(String(64))
+    result: Mapped[str] = mapped_column(String(10), nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    __table_args__ = (
+        CheckConstraint("result IN ('valid','duplicate','invalid')", name="ck_scan_result"),
+        Index("uq_scan_client_id", "device_id", "client_scan_id", unique=True),
+    )

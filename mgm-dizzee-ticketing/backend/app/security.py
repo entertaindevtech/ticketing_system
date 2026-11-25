@@ -20,21 +20,21 @@ def qr_payload(secret: str, ticket_code: str, booking_ref: str, visit_date: str)
     return f"{base}|{base64.b32encode(_mac(secret, 'qr|' + base)).decode()[:12]}"
 
 
-def parse_qr(secret: str, raw: str) -> tuple[str | None, str]:
-    """-> (ticket_code, error). Accepts a signed MGMDW2 payload, a legacy MGMDW1 payload (its signature proves
+def parse_qr(secret: str, raw: str) -> tuple[str | None, str | None, str]:
+    """-> (ticket_code, signed_visit_date, error). Accepts a signed MGMDW2 payload, a legacy MGMDW1 payload (its signature proves
     nothing; the ticket must exist in the database) or a bare ticket code typed by staff."""
     code = raw.strip()
     if code.startswith("MGMDW2|"):
         parts = code.split("|")
         if len(parts) != 5 or not hmac.compare_digest(qr_payload(secret, parts[1], parts[2], parts[3]), code):
-            return None, "Invalid QR code – signature check failed"
-        return parts[1], ""
+            return None, None, "Invalid QR code – signature check failed"
+        return parts[1], parts[3], ""
     if code.startswith("MGMDW1|"):
         parts = code.split("|")
-        return (parts[1], "") if len(parts) == 5 else (None, "Invalid QR code")
+        return (parts[1], None, "") if len(parts) == 5 else (None, None, "Invalid QR code")
     if 4 <= len(code) <= 16 and code.replace("-", "").isalnum():
-        return code.upper(), ""
-    return None, "Invalid QR code"
+        return code.upper(), None, ""
+    return None, None, "Invalid QR code"
 
 
 def access_token(secret: str, booking_ref: str) -> str:

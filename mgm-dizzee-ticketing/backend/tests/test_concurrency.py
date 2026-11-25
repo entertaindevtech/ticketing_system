@@ -109,3 +109,12 @@ def test_commission_created_once_under_concurrent_capture(app, db, settings, cli
                                                        amount=total, event_id=f"evt-{i % 2}"))
     assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 1
     assert db.scalar(select(func.count()).select_from(Ticket)) == 2
+
+
+def test_concurrent_scans_admit_a_ticket_exactly_once(app, db, settings, client):
+    from app import gate
+    from .conftest import TODAY, paid_booking
+    _, b = paid_booking(client, visit_date=TODAY)
+    qr = b["tickets"][0]["qr"]
+    res = race(app, 8, lambda s, i: gate.scan(s, settings, raw=qr, gate=f"Gate {i}", staff_code=f"STF{i}", device_id=f"d{i}", client_scan_id="1")["kind"])
+    assert sorted(res).count("valid") == 1 and res.count("duplicate") == 7, res
