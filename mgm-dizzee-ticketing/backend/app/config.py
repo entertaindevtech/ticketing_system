@@ -16,8 +16,6 @@ class Settings:
     # Public URL customers land on; referral URLs are built from it (e.g. https://book.example.com).
     public_app_url: str = field(default_factory=lambda: os.environ.get("PUBLIC_APP_URL", "http://localhost:8000").rstrip("/"))
     admin_api_token: str = field(default_factory=lambda: os.environ.get("ADMIN_API_TOKEN", ""))
-    # When set, booking lifecycle events must carry this token (server-to-server use; see handover doc).
-    booking_events_token: str = field(default_factory=lambda: os.environ.get("BOOKING_EVENTS_TOKEN", ""))
     attribution_model: str = field(default_factory=lambda: os.environ.get("ATTRIBUTION_MODEL", "first_click"))
     attribution_window_days: int = field(default_factory=lambda: _int("ATTRIBUTION_WINDOW_DAYS", 30))
     max_bookings_per_session: int = field(default_factory=lambda: _int("MAX_BOOKINGS_PER_SESSION", 5))

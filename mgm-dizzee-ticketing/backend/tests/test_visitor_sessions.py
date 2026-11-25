@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from app.acquisition import classify, referrer_host
 from app.models import BookingAttribution, InfluencerCommission, VisitorSession, utcnow
 
-from .conftest import ADMIN, BOOKING, click, make_influencer, pay, visit
+from .conftest import ADMIN, cancel, click, make_influencer, modify, pay, ref_of, visit
 
 OWN = {"book.example.test"}
 
@@ -131,7 +131,7 @@ def test_booking_snapshot_copies_region_source_and_campaign(client, db):
     s = session_of(db, tok)
     s.geo_region = "Changed later (new GeoLite release)"
     db.commit()
-    b = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == "MGM-SNP001"))
+    b = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == ref_of(client, "MGM-SNP001")))
     assert (b.source, b.geo_country_code, b.geo_region, b.utm_campaign, b.utm_medium) == ("paid", "US", "California", "dec", "email")
 
 
@@ -145,7 +145,7 @@ def test_modifying_a_direct_booking_never_duplicates_it(client, db):
     tok = visit(client).json()["session_token"]
     pay(client, "MGM-MOD010", tok)
     pay(client, "MGM-MOD010", tok)  # repeated callback
-    client.post("/api/booking-events/modified", json={**BOOKING, "booking_ref": "MGM-MOD010", "tickets": 3, "subtotal": 3646, "tax": 656, "total": 4302})
+    modify(client, "MGM-MOD010", {"ga": 3})
     rows = db.scalars(select(BookingAttribution)).all()
     assert len(rows) == 1 and rows[0].tickets == 3 and rows[0].total_amount == Decimal("4302.00")
 
@@ -161,7 +161,7 @@ def test_regional_and_source_aggregates(client):
     pay(client, "MGM-AGG002", t_org)
     pay(client, "MGM-AGG003", t_inf)
     pay(client, "MGM-AGG004", None)                                                                 # no session at all
-    client.post("/api/booking-events/cancelled", json={"booking_ref": "MGM-AGG002"})
+    cancel(client, "MGM-AGG002")
 
     r = client.get("/api/admin/regional", headers=ADMIN).json()
     s = r["summary"]

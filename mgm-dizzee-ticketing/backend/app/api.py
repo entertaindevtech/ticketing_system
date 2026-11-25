@@ -1,11 +1,10 @@
-import hmac
 from urllib.parse import urlsplit
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -16,7 +15,6 @@ from .geo import client_ip
 from .models import BookingAttribution, Influencer, InfluencerCommission
 
 PLATFORMS = ("Instagram", "YouTube", "Facebook", "X", "TikTok", "Blog", "Other")
-BOOKING_REF = r"^[A-Z0-9][A-Z0-9-]{2,39}$"  # e.g. MGM-7TXBFB
 
 
 # ---------- dependencies (overridable in tests) ----------
@@ -32,14 +30,8 @@ def cfg(request: Request):
     return request.app.state.settings
 
 
-def require_events_token(request: Request, x_booking_events_token: str | None = Header(default=None)):
-    expected = request.app.state.settings.booking_events_token
-    if expected and not (x_booking_events_token and hmac.compare_digest(x_booking_events_token, expected)):
-        raise HTTPException(401, "Invalid booking events token")
-
-
 public = APIRouter(prefix="/api")
-events = APIRouter(prefix="/api/booking-events", dependencies=[Depends(require_events_token)])
+events = APIRouter(prefix="/api/booking-events")
 # Influencer & regional intelligence screens: admins and marketing staff (or the break-glass ADMIN_API_TOKEN).
 admin = APIRouter(prefix="/api/admin", dependencies=[Depends(require_roles("admin", "marketing"))])
 
@@ -83,65 +75,12 @@ def visit(body: VisitIn, request: Request, db: Session = Depends(get_db)):
     }
 
 
-# ---------- booking lifecycle (called by the booking flow / payment confirmation) ----------
-class AmountsIn(BaseModel):
-    tickets: int = Field(ge=0, le=10000)
-    subtotal: Decimal = Field(ge=0, le=10_000_000)
-    discount: Decimal = Field(ge=0, le=10_000_000)
-    addons: Decimal = Field(ge=0, le=10_000_000)
-    tax: Decimal = Field(ge=0, le=10_000_000)
-    total: Decimal = Field(ge=0, le=10_000_000)
-    visit_date: date | None = None
-
-    @model_validator(mode="after")
-    def _consistent(self):
-        # Mirrors the app's pricing (store.ts priceCart): total = subtotal - discount + tax; add-ons are part of subtotal.
-        if self.discount > self.subtotal or self.addons > self.subtotal:
-            raise ValueError("discount and add-ons cannot exceed the subtotal")
-        if abs(self.subtotal - self.discount + self.tax - self.total) > 1:
-            raise ValueError("total must equal subtotal - discount + tax")
-        return self
-
-    def to_amounts(self):
-        return services.BookingAmounts(**self.model_dump(include=set(AmountsIn.model_fields)))
-
-
-class PaidIn(AmountsIn):
-    booking_ref: str = Field(pattern=BOOKING_REF)
-    session_token: str | None = Field(default=None, max_length=64)
-    payment_status: str = Field(max_length=16)
-    payment_ref: str | None = Field(default=None, max_length=80)
-    paid_at: datetime | None = None
-
-
-class ModifiedIn(AmountsIn):
-    booking_ref: str = Field(pattern=BOOKING_REF)
-
-
-class CancelledIn(BaseModel):
-    booking_ref: str = Field(pattern=BOOKING_REF)
-    reason: str | None = Field(default=None, max_length=255)
-
-
-@events.post("/paid")
-def booking_paid(body: PaidIn, db: Session = Depends(get_db), s=Depends(cfg)):
-    attr = services.confirm_payment(db, s, body.booking_ref, body.session_token, body.payment_status,
-                                    body.to_amounts(), body.payment_ref, body.paid_at)
-    inf = attr.influencer if attr else None
-    return {"recorded": attr is not None, "attributed": inf is not None, "influencer_code": inf.referral_code if inf else None,
-            "source": attr.source if attr else None}
-
-
-@events.post("/cancelled")
-def booking_cancelled(body: CancelledIn, db: Session = Depends(get_db)):
-    attr = services.cancel_booking(db, body.booking_ref, body.reason)
-    return {"attributed": attr is not None, "status": attr.status if attr else None}
-
-
-@events.post("/modified")
-def booking_modified(body: ModifiedIn, db: Session = Depends(get_db), s=Depends(cfg)):
-    attr = services.modify_booking(db, s, body.booking_ref, body.to_amounts())
-    return {"attributed": attr is not None}
+# ---------- retired: browser-reported booking events ----------
+@events.api_route("/{kind}", methods=["POST"], include_in_schema=False)
+def retired_booking_event(kind: str):
+    """Old front-end builds reported payments from the browser. Bookings, payments, cancellations and changes are
+    now recorded by the booking engine itself, so these reports are refused (and never trusted)."""
+    raise HTTPException(410, "Booking events are recorded by the server; this endpoint is retired")
 
 
 # ---------- admin: influencers ----------

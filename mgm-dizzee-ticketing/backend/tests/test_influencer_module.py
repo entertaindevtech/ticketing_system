@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from app.geo import GeoLookup, client_ip, region_bucket
 from app.models import BookingAttribution, InfluencerCommission, ReferralClick, VisitorSession, utcnow
 
-from .conftest import ADMIN, BOOKING, click, make_influencer, pay
+from .conftest import ADMIN, cancel, click, make_influencer, modify, pay
 
 
 # ---------- influencer management & referral validation ----------
@@ -151,8 +151,8 @@ def test_paid_booking_creates_commission_on_ticket_net(client, db):
 def test_discounts_reduce_commission_basis(client, db):
     make_influencer(client, rate=10)
     tok = click(client).json()["session_token"]
-    pay(client, "MGM-DISC01", tok, discount=500, tax=368, total=2415)
-    assert db.scalar(select(InfluencerCommission.basis_amount)) == Decimal("1698.00")
+    pay(client, "MGM-DISC01", tok, cart={"tickets": {"ga": 2}, "addons": {"food": 1}, "coupon": "MGM30"})
+    assert db.scalar(select(InfluencerCommission.basis_amount)) == Decimal("1539.00")  # 2198 - 659 (MGM30); add-on excluded
 
 
 def test_failed_or_pending_payment_creates_nothing(client, db):
@@ -200,24 +200,25 @@ def test_cancellation_reverses_commission_and_keeps_history(client, db):
     pay(client, "MGM-CANC01", click(client).json()["session_token"])
     cid = db.scalar(select(InfluencerCommission.id))
     client.post(f"/api/admin/commissions/{cid}/approve", headers=ADMIN)
-    r = client.post("/api/booking-events/cancelled", json={"booking_ref": "MGM-CANC01", "reason": "Customer refund"})
-    assert r.json() == {"attributed": True, "status": "cancelled"}
-    client.post("/api/booking-events/cancelled", json={"booking_ref": "MGM-CANC01"})  # repeat is harmless
+    assert cancel(client, "MGM-CANC01").json()["status"] == "cancelled"
+    assert cancel(client, "MGM-CANC01").status_code == 409  # repeat changes nothing
     detail = client.get(f"/api/admin/commissions/{cid}", headers=ADMIN).json()
-    assert detail["status"] == "reversed" and detail["reversal_reason"] == "Customer refund"
+    assert detail["status"] == "reversed" and detail["reversal_reason"].startswith("Cancelled by admin")
     assert [(e["from"], e["to"]) for e in detail["events"]] == [(None, "pending"), ("pending", "approved"), ("approved", "reversed")]
     a = client.get("/api/admin/analytics", headers=ADMIN).json()
     assert a["summary"]["paid_bookings"] == 0 and a["summary"]["revenue"] == 0 and a["influencers"][0]["attributed_bookings"] == 1
 
 
-def test_cancelling_unattributed_booking_is_a_noop(client):
-    assert client.post("/api/booking-events/cancelled", json={"booking_ref": "MGM-NONE01"}).json() == {"attributed": False, "status": None}
+def test_cancelling_unattributed_booking_creates_no_commission_activity(client, db):
+    pay(client, "MGM-NONE01", None)
+    assert cancel(client, "MGM-NONE01").status_code == 200
+    assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 0
 
 
 def test_modification_updates_pending_commission_without_duplicating(client, db):
     make_influencer(client, rate=10)
     pay(client, "MGM-MOD001", click(client).json()["session_token"])
-    client.post("/api/booking-events/modified", json={**BOOKING, "booking_ref": "MGM-MOD001", "tickets": 3, "subtotal": 3646, "tax": 656, "total": 4302})
+    assert modify(client, "MGM-MOD001", {"ga": 3}).status_code == 200
     rows = db.execute(select(InfluencerCommission.amount, InfluencerCommission.rate)).all()
     assert rows == [(Decimal("329.70"), Decimal("10.00"))]  # (3646-349) * 10%
 
@@ -227,7 +228,7 @@ def test_modification_after_approval_keeps_amount(client, db):
     pay(client, "MGM-MOD002", click(client).json()["session_token"])
     cid = db.scalar(select(InfluencerCommission.id))
     client.post(f"/api/admin/commissions/{cid}/approve", headers=ADMIN)
-    client.post("/api/booking-events/modified", json={**BOOKING, "booking_ref": "MGM-MOD002", "subtotal": 5000, "tax": 900, "total": 5900})
+    assert modify(client, "MGM-MOD002", {"ga": 4}).status_code == 200
     d = client.get(f"/api/admin/commissions/{cid}", headers=ADMIN).json()
     assert d["amount"] == 219.8 and "review manually" in d["events"][-1]["note"]
 
@@ -255,7 +256,7 @@ def test_analytics_aggregation(client):
     click(client, code="BBB222", ip="8.8.8.8")  # clicked, never booked
     pay(client, "MGM-AN0001", t1)
     pay(client, "MGM-AN0002", t2)
-    client.post("/api/booking-events/cancelled", json={"booking_ref": "MGM-AN0002"})
+    cancel(client, "MGM-AN0002")
 
     a = client.get("/api/admin/analytics", headers=ADMIN).json()
     s = a["summary"]
@@ -290,12 +291,14 @@ def test_weak_or_placeholder_admin_token_keeps_admin_api_closed(app, client):
         assert client.get("/api/admin/influencers", headers={"X-Admin-Token": weak}).status_code == 401  # token path disabled
 
 
-def test_inconsistent_or_malformed_booking_events_are_rejected(client, db):
+def test_browser_reported_booking_events_are_retired_and_bad_carts_rejected(client, db):
     make_influencer(client)
     tok = click(client).json()["session_token"]
-    assert pay(client, "MGM-BAD001", tok, total=99999).status_code == 422  # total != subtotal - discount + tax
-    assert pay(client, "MGM-BAD002", tok, discount=999999).status_code == 422
-    assert pay(client, "mgm bad; drop", tok).status_code == 422
+    for kind in ("paid", "cancelled", "modified"):  # the old browser outbox path cannot record or change anything
+        r = client.post(f"/api/booking-events/{kind}", json={"booking_ref": "MGM-BAD001", "session_token": tok, "payment_status": "paid", "total": 1})
+        assert r.status_code == 410
+    assert pay(client, "MGM-BAD002", tok, cart={"tickets": {"ga": -1}}).status_code == 422
+    assert pay(client, "MGM-BAD003", tok, cart={"tickets": {"zz": 2}}).status_code == 422  # unknown category: no tickets
     assert db.scalar(select(func.count()).select_from(BookingAttribution)) == 0
 
 

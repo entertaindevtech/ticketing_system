@@ -93,12 +93,47 @@ def visit(client, ip="49.36.10.10", token=None, referrer=None, **params):
     return client.post("/api/visits", json={"session_token": token, "referrer": referrer, **params}, headers={"X-Forwarded-For": ip})
 
 
-# A booking as the front-end reports it: 2 adults @1099 (2198) + one add-on 349, 18% GST.
-BOOKING = {"tickets": 2, "subtotal": 2547, "discount": 0, "addons": 349, "tax": 458, "total": 3005, "visit_date": "2026-12-05"}
+class Result:
+    def __init__(self, status_code, data):
+        self.status_code, self._data = status_code, data
+
+    def json(self):
+        return self._data
 
 
-def pay(client, ref, token, status="paid", **over):
-    return client.post("/api/booking-events/paid", json={**BOOKING, "booking_ref": ref, "session_token": token, "payment_status": status, "payment_ref": "pay_X", **over})
+def pay(client, label, token, status="paid", cart=None):
+    """A website booking made through the real engine (server pricing, simulated provider). `label` is the
+    Idempotency-Key, so repeating a label replays the same booking (like a retried payment callback).
+    Default cart: 2 adults on Wed 2 Dec + one meal = 2547, GST 458, total 3005. status: paid | failed | pending.
+    Returns what was recorded for attribution: {recorded, attributed, influencer_code, source}."""
+    from sqlalchemy import select as _select
+    from app.models import BookingAttribution, Influencer
+    r = book(client, cart=cart, session_token=token, key=label)
+    if r.status_code != 201:
+        return r
+    created = r.json()
+    ref = created["booking"]["id"]
+    client.__dict__.setdefault("refs", {})[label] = ref
+    if status != "pending" and created["booking"]["state"] == "pending_payment":
+        pay_sim(client, created, "success" if status == "paid" else "decline")
+    with client.app.state.sessionmaker() as s:
+        a = s.scalar(_select(BookingAttribution).where(BookingAttribution.booking_ref == ref))
+        code = s.get(Influencer, a.influencer_id).referral_code if a and a.influencer_id else None
+        return Result(200, {"recorded": a is not None, "attributed": code is not None, "influencer_code": code, "source": a.source if a else None})
+
+
+def ref_of(client, label):
+    return client.__dict__["refs"][label]
+
+
+def cancel(client, label):
+    """Admin cancel & refund through the booking engine (reverses any commission)."""
+    return client.post(f"/api/admin/bookings/{ref_of(client, label)}/cancel", headers=ADMIN)
+
+
+def modify(client, label, tickets, addons=None, visit_date="2026-12-02"):
+    return client.post(f"/api/admin/bookings/{ref_of(client, label)}/modify", headers=ADMIN,
+                       json={"visit_date": visit_date, "tickets": tickets, "addons": {"food": 1} if addons is None else addons})
 
 
 # ---------- booking engine helpers ----------
