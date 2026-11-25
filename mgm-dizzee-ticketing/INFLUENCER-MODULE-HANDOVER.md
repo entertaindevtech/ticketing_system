@@ -122,7 +122,7 @@ Breakdowns are available by **source, country, state and city**. Indian reportin
   3. The same browser then followed `?ref=REGN01`: same session, attribution added, source still paid, still one session.
   4. The Regions & channels tab rendered all KPIs, the channel table, revenue by channel and the regional funnel. A grid overflow found here was fixed.
   5. The Influencer performance tab showed the new breakdown selector. No console errors.
-- **PostgreSQL: not tested.** The Docker daemon was not running. An attempt to run an embedded PostgreSQL (pip `pgserver`) was blocked by this session's permission policy, so I did not pursue it. The migration renders as PostgreSQL DDL (§3), but has never been executed against PostgreSQL. Run `TEST_DATABASE_URL=postgresql://… pytest` before merging.
+- **PostgreSQL (25 Nov): 64 passed on Neon PostgreSQL 18.7**, including both migration tests (which now use `TEST_DATABASE_URL` when it is a PostgreSQL URL). Migrations `0001→0002` were also run upgrade → downgrade → upgrade. To repeat: put a **disposable** database URL in `backend/.env.test` (git-ignored; loaded by `tests/conftest.py`) and run `pytest`. The tests drop tables and the migration tests wipe the `public` schema. On PostgreSQL the renamed table keeps its original constraint and sequence names (`referral_sessions_pkey`, `referral_sessions_id_seq`); this is cosmetic.
 
 **Honest scope.** These numbers cover bookings that reach the server through the browser event outbox. Bookings are still stored only in each browser (`localStorage`), and booking events are still browser-generated (§12). Anyone can post fabricated "paid" events; that now pollutes **all** sales figures, not only commissions. Until bookings and payment confirmation move server-side, this is **website analytics with known gaps**, not a reconciled sales ledger. It must not be used for financial reporting.
 
@@ -368,7 +368,7 @@ The full browser regression run for the consolidated app is in §11a.
 - GeoLite refresh skip and failure safety; health check;
 - the Alembic migration upgrading, matching the models and downgrading.
 
-**Where they ran.** Tests ran on **SQLite** because no PostgreSQL server was available on the dev machine. The migration was rendered as PostgreSQL DDL with `alembic upgrade head --sql` and checked, but it was **not executed against a real Postgres**. To run the suite on Postgres: `TEST_DATABASE_URL=postgresql://… pytest`.
+**Where they ran.** Tests ran on **SQLite** because no PostgreSQL server was available on the dev machine. The migration was rendered as PostgreSQL DDL with `alembic upgrade head --sql` and checked, but it was **not executed against a real Postgres**. To run the suite on Postgres: `TEST_DATABASE_URL=postgresql://… pytest`. *(Superseded 25 Nov: the full suite now also passes on PostgreSQL; see §0.)*
 
 **Front-end:** `tsc --noEmit` is clean and `npm run build` succeeds.
 

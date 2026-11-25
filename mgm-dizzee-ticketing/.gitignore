@@ -10,3 +10,6 @@ __pycache__/
 *.db
 *.mmdb
 .env
+# Local env files (only .env.example is committed)
+.env.*
+!.env.example

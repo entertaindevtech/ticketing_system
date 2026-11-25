@@ -7,6 +7,14 @@ from app.config import Settings
 from app.db import Base
 from app.main import create_app
 
+# Load backend/.env.test (git-ignored) without a dependency; a variable already set in the shell wins, empty values are skipped.
+_env = os.path.join(os.path.dirname(__file__), "..", ".env.test")
+if os.path.exists(_env):
+    for _line in open(_env, encoding="utf-8-sig"):
+        _k, _, _v = _line.strip().partition("=")
+        if _k and not _k.startswith("#") and _v.strip():
+            os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
+
 ADMIN = {"X-Admin-Token": "test-admin-token-0123456789abcdef"}
 
 
