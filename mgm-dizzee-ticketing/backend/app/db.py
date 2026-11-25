@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -17,8 +17,20 @@ def normalize_url(url: str) -> str:
 
 def make_engine(url: str):
     url = normalize_url(url)
-    kw = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {"pool_pre_ping": True}
-    return create_engine(url, **kw)
+    if not url.startswith("sqlite"):
+        return create_engine(url, pool_pre_ping=True)
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    # pysqlite's default mode opens transactions lazily, so a SAVEPOINT taken before the first write commits on
+    # release. SQLAlchemy's documented fix: let SQLAlchemy emit BEGIN itself (SQLite is dev/test only).
+    @event.listens_for(engine, "connect")
+    def _connect(dbapi_conn, _rec):
+        dbapi_conn.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def _begin(conn):
+        conn.exec_driver_sql("BEGIN")
+    return engine
 
 
 def make_sessionmaker(engine):

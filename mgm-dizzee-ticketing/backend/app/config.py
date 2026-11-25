@@ -7,6 +7,9 @@ def _int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
 
 
+DEV_SECRET = "dev-only-secret-not-for-production-use-0000"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = field(default_factory=lambda: os.environ.get("DATABASE_URL", "sqlite:///./mgm_dev.db"))
@@ -32,6 +35,11 @@ class Settings:
     app_env: str = field(default_factory=lambda: os.environ.get("APP_ENV", "development").strip().lower())
     # Pins the park's "today" (YYYY-MM-DD) for demos and tests. Never set in production.
     demo_today: str | None = field(default_factory=lambda: os.environ.get("DEMO_TODAY") or None)
+    # Signs ticket QR codes and customer booking-access links (HMAC-SHA256). Required (>= 32 chars) in production;
+    # rotating it invalidates every issued QR code and link.
+    app_secret: str = field(default_factory=lambda: os.environ.get("APP_SECRET", DEV_SECRET))
+    # Demo payment provider. No money moves. Must be off in production until a verified gateway is integrated.
+    simulated_payments: bool = field(default_factory=lambda: _bool("SIMULATED_PAYMENTS", True))
 
 
 def _bool(name: str, default: bool) -> bool:

@@ -1,6 +1,8 @@
 import os
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from app.catalog import seed_catalog
@@ -64,9 +66,16 @@ def client(app):
 
 @pytest.fixture
 def db(app):
-    s = app.state.sessionmaker()
+    # The test's own inspection session. On SQLite it uses a plain engine whose reads don't hold a transaction
+    # open (the app's engine is fully transactional, and a long-lived reader would lock out its writes).
+    eng = app.state.engine
+    if eng.dialect.name == "sqlite":
+        eng = create_engine(eng.url, connect_args={"check_same_thread": False})
+    s = Session(eng, expire_on_commit=False)
     yield s
     s.close()
+    if eng is not app.state.engine:
+        eng.dispose()
 
 
 def make_influencer(client, code="RAHUL01", rate=8, name="Rahul Sharma", platform="Instagram"):
@@ -90,3 +99,31 @@ BOOKING = {"tickets": 2, "subtotal": 2547, "discount": 0, "addons": 349, "tax": 
 
 def pay(client, ref, token, status="paid", **over):
     return client.post("/api/booking-events/paid", json={**BOOKING, "booking_ref": ref, "session_token": token, "payment_status": status, "payment_ref": "pay_X", **over})
+
+
+# ---------- booking engine helpers ----------
+CUSTOMER = {"name": "Test Customer", "phone": "9876543210", "email": "test@example.com"}
+CART = {"tickets": {"ga": 2}, "addons": {"food": 1}}  # Wed 2 Dec: 2198 + 349 = 2547, GST 458 -> 3005
+
+
+def book(client, cart=None, visit_date="2026-12-02", session_token=None, key=None, customer=None):
+    h = {"Idempotency-Key": key} if key else {}
+    return client.post("/api/bookings", json={"visit_date": visit_date, "cart": cart or CART, "customer": customer or CUSTOMER,
+                                              "session_token": session_token}, headers=h)
+
+
+def pay_sim(client, created, outcome="success", method="UPI"):
+    ref, tok = created["booking"]["id"], created["accessToken"]
+    h = {"X-Booking-Token": tok}
+    p = client.post(f"/api/bookings/{ref}/payments", json={"method": method}, headers=h)
+    assert p.status_code == 201, p.text
+    return client.post(f"/api/bookings/{ref}/payments/{p.json()['payment_id']}/simulate", json={"outcome": outcome}, headers=h)
+
+
+def paid_booking(client, **kw):
+    r = book(client, **kw)
+    assert r.status_code == 201, r.text
+    created = r.json()
+    res = pay_sim(client, created)
+    assert res.status_code == 200, res.text
+    return created, res.json()

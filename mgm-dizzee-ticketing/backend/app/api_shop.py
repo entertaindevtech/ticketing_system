@@ -62,8 +62,9 @@ def get_catalog(db: Session = Depends(get_db), s=Depends(cfg)):
 def availability(date_from: date = Query(alias="from"), date_to: date = Query(alias="to"), db: Session = Depends(get_db), s=Depends(cfg)):
     if (date_to - date_from).days > 92 or date_to < date_from:
         raise HTTPException(422, "Range must be 0-92 days")
+    from . import inventory
     ctx, t = catalog.load_ctx(db), today(s)
-    return [{"date": d, **pricing.date_status(d, ctx, t), "priceAdj": pricing.price_adj(d, ctx)}
+    return [{"date": d, **pricing.date_status(d, ctx, t), "priceAdj": pricing.price_adj(d, ctx), "remaining": inventory.remaining(db, ctx, d)}
             for d in (pricing.add_days(date_from.isoformat(), i) for i in range((date_to - date_from).days + 1))]
 
 

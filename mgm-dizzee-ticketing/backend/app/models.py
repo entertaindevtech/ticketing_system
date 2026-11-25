@@ -119,6 +119,9 @@ class BookingAttribution(Timestamps, GeoSnapshot, Base):
     total_amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="paid")  # paid | cancelled
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set for every booking captured by the booking engine; NULL only for rows reported by the retired browser events.
+    booking_id: Mapped[int | None] = mapped_column(ForeignKey("bookings.id"), unique=True)
+    channel: Mapped[str] = mapped_column(String(8), nullable=False, default="web", server_default="web")  # web | counter
     influencer: Mapped[Influencer | None] = relationship()
     commission: Mapped["InfluencerCommission"] = relationship(back_populates="attribution", uselist=False)
     __table_args__ = (
@@ -208,3 +211,173 @@ class ParkDate(Base):
     __tablename__ = "park_dates"
     visit_date: Mapped[date] = mapped_column(Date, primary_key=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+# ---------- booking ledger (milestone B) ----------
+class Customer(Timestamps, Base):
+    __tablename__ = "customers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    phone: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)  # 10-digit Indian mobile
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(200))
+    phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # set once OTP exists
+
+
+class Booking(Timestamps, Base):
+    __tablename__ = "bookings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)  # MGM-XXXXXX, server-generated
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(8), nullable=False)  # web | counter
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="live", server_default="live")  # live | legacy_import | demo_seed
+    visit_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # customer snapshot at booking time
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    phone: Mapped[str] = mapped_column(String(16), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(200))
+    notes: Mapped[str | None] = mapped_column(String(500))
+    # priced totals (server-computed)
+    subtotal: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    discount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    addons_total: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    tax: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    total: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    complimentary: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    coupon: Mapped[str | None] = mapped_column(String(32))
+    offer_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    units: Mapped[list] = mapped_column(JSON, nullable=False)  # admissions to issue on payment [{catId,label,offerId,complimentary}]
+    hold_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    visitor_session_id: Mapped[int | None] = mapped_column(ForeignKey("visitor_sessions.id"))
+    created_by: Mapped[str | None] = mapped_column(String(32))  # staff code for counter/admin actions
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), unique=True)
+    request_sha256: Mapped[str | None] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    customer: Mapped[Customer] = relationship()
+    items: Mapped[list["BookingItem"]] = relationship(order_by="BookingItem.id", cascade="all, delete-orphan")
+    tickets: Mapped[list["Ticket"]] = relationship(order_by="Ticket.id")
+    payments: Mapped[list["Payment"]] = relationship(order_by="Payment.id")
+    __table_args__ = (
+        CheckConstraint("status IN ('pending_payment','confirmed','cancelled','expired')", name="ck_booking_status"),
+        CheckConstraint("channel IN ('web','counter')", name="ck_booking_channel"),
+        CheckConstraint("channel = 'web' OR visitor_session_id IS NULL", name="ck_counter_no_session"),
+        CheckConstraint("total >= 0 AND subtotal >= 0 AND tax >= 0", name="ck_booking_amounts"),
+    )
+
+
+class BookingItem(Base):
+    __tablename__ = "booking_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)  # ticket | offer | addon
+    ref_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    detail: Mapped[str | None] = mapped_column(String(200))
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    original: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    __table_args__ = (CheckConstraint("qty > 0", name="ck_item_qty"), CheckConstraint("kind IN ('ticket','offer','addon')", name="ck_item_kind"))
+
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)  # TKT-XXXXXXXX (printed / in the QR)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    category_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    visit_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="issued")  # issued | used | void
+    complimentary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    offer_id: Mapped[str | None] = mapped_column(String(32))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    used_gate: Mapped[str | None] = mapped_column(String(60))
+    used_by: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('issued','used','void')", name="ck_ticket_status"),
+        CheckConstraint("status <> 'used' OR used_at IS NOT NULL", name="ck_ticket_used_at"),
+        Index("ix_tickets_visit_status", "visit_date", "status"),
+    )
+
+
+class DateInventory(Base):
+    """Park-wide admissions per visit date. held = reserved by unpaid bookings; sold = paid."""
+    __tablename__ = "date_inventory"
+    visit_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    capacity: Mapped[int] = mapped_column(Integer, nullable=False)
+    held: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (CheckConstraint("held >= 0 AND sold >= 0 AND held + sold <= capacity", name="ck_date_inventory"),)
+
+
+class CategoryInventory(Base):
+    __tablename__ = "category_inventory"
+    visit_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    category_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    capacity: Mapped[int] = mapped_column(Integer, nullable=False)
+    held: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (CheckConstraint("held >= 0 AND sold >= 0 AND held + sold <= capacity", name="ck_category_inventory"),)
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="charge")  # charge | difference
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)  # simulated | counter | razorpay | legacy
+    method: Mapped[str | None] = mapped_column(String(32))
+    provider_order_id: Mapped[str | None] = mapped_column(String(80))
+    provider_payment_id: Mapped[str | None] = mapped_column(String(80))
+    amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="created")
+    failure_reason: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("status IN ('created','captured','failed','refunded','partially_refunded')", name="ck_payment_status"),
+        CheckConstraint("amount >= 0", name="ck_payment_amount"),
+        Index("uq_payment_provider_payment", "provider", "provider_payment_id", unique=True),
+    )
+
+
+class PaymentEvent(Base):
+    """Every payment-provider event processed (simulated now, verified gateway webhooks later). The unique
+    (provider, event_id) makes replays and concurrent duplicates no-ops."""
+    __tablename__ = "payment_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    type: Mapped[str] = mapped_column(String(40), nullable=False)
+    payment_id: Mapped[int | None] = mapped_column(ForeignKey("payments.id"))
+    payload_sha256: Mapped[str | None] = mapped_column(String(64))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (Index("uq_payment_event", "provider", "event_id", unique=True),)
+
+
+class AuditLog(Base):
+    """Append-only record of every booking, payment, refund, scan and admin change (who, what, when)."""
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(60), nullable=False)  # "Customer", "System", or a staff code
+    type: Mapped[str] = mapped_column(String(24), nullable=False)
+    ref: Mapped[str | None] = mapped_column(String(40), index=True)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSON)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(24), nullable=False)
+    ref: Mapped[str | None] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
