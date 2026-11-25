@@ -5,7 +5,7 @@ import { Icon, StoreProvider } from "./ui";
 import CustomerApp from "./customer";
 import AdminApp from "./admin";
 import StaffApp from "./staff";
-import { captureReferral, flushOutbox } from "./referral";
+import { captureVisit, flushOutbox } from "./referral";
 
 type App = "customer" | "admin" | "staff";
 const fromHash = (): App => { const h = location.hash.replace("#", ""); return h === "admin" || h === "staff" ? h : "customer"; };
@@ -35,5 +35,5 @@ function Shell() {
   );
 }
 
-void captureReferral().finally(flushOutbox);
+void captureVisit().finally(flushOutbox);
 createRoot(document.getElementById("root")!).render(<StoreProvider><Shell /></StoreProvider>);

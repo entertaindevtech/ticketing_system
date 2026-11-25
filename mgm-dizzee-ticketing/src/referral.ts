@@ -1,36 +1,49 @@
-// Influencer referral capture and booking-lifecycle reporting to the backend (backend/app/api.py).
-// Everything here is best-effort: if the API is unreachable, booking continues exactly as before.
+// Anonymous visitor sessions (all visitors), influencer referral capture and booking-lifecycle reporting
+// to the backend (backend/app/api.py). Best-effort: if the API is unreachable, booking works exactly as before.
 import type { Booking } from "./store";
 
 export const API = String(import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-const SESSION_KEY = "mgm-ref-session";
+const SESSION_KEY = "mgm-visitor-session";
+const LEGACY_KEY = "mgm-ref-session"; // referral-only sessions saved before visitor sessions existed
 const OUTBOX_KEY = "mgm-booking-events";
+const TRACKING = ["ref", "campaign", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "msclkid", "dclid", "gbraid", "wbraid", "fbclid"];
 
-type RefSession = { token: string; expiresAt: string; code: string };
+type VisitorSession = { token: string; expiresAt: string };
 type Event = { kind: "paid" | "cancelled" | "modified"; body: Record<string, unknown> };
 
 const read = <T,>(k: string, fallback: T): T => { try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
 const write = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } };
 
-export function referralToken(): string | null {
-  const s = read<RefSession | null>(SESSION_KEY, null);
+/** Opaque token of this browser's live visitor session, if any. No fingerprinting: only this random token. */
+export function visitorToken(): string | null {
+  const s = read<VisitorSession | null>(SESSION_KEY, null) || read<VisitorSession | null>(LEGACY_KEY, null);
   return s && new Date(s.expiresAt) > new Date() ? s.token : null;
 }
 
-/** Reads ?ref=CODE&campaign=TAG once on page load, records the click and keeps the session token. */
-export async function captureReferral() {
+/** On page load: establishes the visitor session (first visit), or records an influencer click (?ref=). */
+export async function captureVisit() {
   const url = new URL(window.location.href);
-  const code = url.searchParams.get("ref");
-  if (!code) return;
-  const campaign = url.searchParams.get("campaign");
-  // Drop the parameters so a refresh or shared link doesn't count a second click.
-  url.searchParams.delete("ref"); url.searchParams.delete("campaign");
-  window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  const p = Object.fromEntries(TRACKING.map((k) => [k, url.searchParams.get(k)]));
+  const token = visitorToken();
+  if (token && !p.ref) return; // returning visitor: session, region and first-touch source already recorded
+  if (/^#(admin|staff)/.test(window.location.hash)) return; // internal admin/gate screens are not website visitors
+  if (TRACKING.some((k) => p[k] !== null)) { // clean URL so a refresh or a re-shared link isn't counted again
+    TRACKING.forEach((k) => url.searchParams.delete(k));
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
   try {
-    const r = await fetch(`${API}/api/referrals/click`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, campaign, session_token: referralToken() }) });
-    if (!r.ok) return; // unknown/inactive code: ignore silently
+    const r = await fetch(`${API}/api/visits`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_token: token, ref: p.ref, campaign: p.campaign, utm_source: p.utm_source, utm_medium: p.utm_medium,
+        utm_campaign: p.utm_campaign, utm_content: p.utm_content, utm_term: p.utm_term,
+        click_ids: ["gclid", "msclkid", "dclid", "gbraid", "wbraid"].filter((k) => p[k] !== null), // names only, never the ids
+        referrer: document.referrer || null,
+      }),
+    });
+    if (!r.ok) return;
     const d = await r.json();
-    write(SESSION_KEY, { token: d.session_token, expiresAt: d.expires_at, code: d.attributed_code } satisfies RefSession);
+    if (d.session_token) write(SESSION_KEY, { token: d.session_token, expiresAt: d.expires_at } satisfies VisitorSession);
   } catch { /* offline / API down */ }
 }
 
@@ -39,10 +52,11 @@ const amounts = (b: Booking) => ({
   tax: b.totals.tax, total: b.totals.total, visit_date: b.visitDate,
 });
 
-/** Call once the payment is confirmed. Bookings without a live referral session are not reported. */
+/** Call once an online payment is confirmed. Every website booking is reported (with or without a session) so
+ * regional sales cover all visitors; the server decides whether an influencer commission applies. */
 export function reportPaid(b: Booking) {
-  const token = referralToken();
-  if (!token || b.payment.status !== "paid") return;
+  const token = visitorToken();
+  if (b.payment.status !== "paid") return;
   enqueue({ kind: "paid", body: { ...amounts(b), booking_ref: b.id, session_token: token, payment_status: b.payment.status, payment_ref: b.payment.txnId, paid_at: new Date().toISOString() } });
 }
 export const reportCancelled = (bookingId: string, reason: string) => enqueue({ kind: "cancelled", body: { booking_ref: bookingId, reason } });

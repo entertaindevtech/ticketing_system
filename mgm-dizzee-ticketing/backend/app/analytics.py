@@ -16,8 +16,9 @@ from decimal import Decimal
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from .geo import city_bucket, region_bucket
-from .models import BookingAttribution as BA, Influencer, InfluencerCommission as IC, ReferralClick, ReferralSession
+from .acquisition import SOURCES
+from .geo import UNKNOWN, city_bucket, region_bucket
+from .models import BookingAttribution as BA, Influencer, InfluencerCommission as IC, ReferralClick, VisitorSession as VS
 
 ZERO = Decimal(0)
 
@@ -47,8 +48,9 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
 
     clicks = dict(db.execute(select(ReferralClick.influencer_id, func.count()).where(
         *_within(ReferralClick.created_at, lo, hi), *inf_filter(ReferralClick.influencer_id)).group_by(ReferralClick.influencer_id)).all())
-    sessions = dict(db.execute(select(ReferralSession.influencer_id, func.count()).where(
-        *_within(ReferralSession.created_at, lo, hi), *inf_filter(ReferralSession.influencer_id)).group_by(ReferralSession.influencer_id)).all())
+    # an influencer's sessions = visitor sessions that received its attribution, dated by attribution time
+    sessions = dict(db.execute(select(VS.influencer_id, func.count()).where(VS.influencer_id.is_not(None),
+        *_within(VS.attributed_at, lo, hi), *inf_filter(VS.influencer_id)).group_by(VS.influencer_id)).all())
 
     paid = BA.status == "paid"
     live_comm = IC.status != "reversed"
@@ -94,15 +96,18 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
 
     # ---- regions (paid bookings only) ----
     geo_rows = db.execute(select(
-        BA.influencer_id, BA.geo_country_code, BA.geo_region, BA.geo_city,
+        BA.influencer_id, BA.campaign, BA.geo_country_code, BA.geo_region, BA.geo_city,
         func.count(BA.id), func.sum(BA.tickets), func.sum(BA.total_amount),
-    ).where(paid, *ba_where).group_by(BA.influencer_id, BA.geo_country_code, BA.geo_region, BA.geo_city)).all()
+    ).where(paid, BA.influencer_id.is_not(None), *ba_where).group_by(
+        BA.influencer_id, BA.campaign, BA.geo_country_code, BA.geo_region, BA.geo_city)).all()
     names = {i["id"]: i["name"] for i in influencers}
-    states, cities, state_inf = defaultdict(lambda: [0, 0, ZERO]), defaultdict(lambda: [0, 0, ZERO]), defaultdict(lambda: [0, 0, ZERO])
-    for inf_id, cc, region, city, n, t, rev in geo_rows:
+    agg_ = lambda: defaultdict(lambda: [0, 0, ZERO])  # noqa: E731
+    states, cities, state_inf, city_inf, camp_state = agg_(), agg_(), agg_(), agg_(), agg_()
+    for inf_id, camp, cc, region, city, n, t, rev in geo_rows:
         st = region_bucket(cc, region)
         ct = city_bucket(cc, city)
-        for bucket, key in ((states, st), (cities, (ct, st)), (state_inf, (st, inf_id))):
+        for bucket, key in ((states, st), (cities, (ct, st)), (state_inf, (st, inf_id)), (city_inf, (ct, st, inf_id)),
+                            (camp_state, (inf_id, camp or "(none)", st))):
             agg = bucket[key]
             agg[0] += n
             agg[1] += int(t or 0)
@@ -111,6 +116,8 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
         "states": sorted([{"state": k, "paid_bookings": v[0], "tickets": v[1], "revenue": float(v[2])} for k, v in states.items()], key=lambda x: -x["revenue"]),
         "cities": sorted([{"city": k[0], "state": k[1], "paid_bookings": v[0], "tickets": v[1], "revenue": float(v[2])} for k, v in cities.items()], key=lambda x: -x["revenue"]),
         "state_influencers": sorted([{"state": k[0], "influencer_id": k[1], "influencer": names.get(k[1], "?"), "paid_bookings": v[0], "tickets": v[1], "revenue": float(v[2])} for k, v in state_inf.items()], key=lambda x: (x["state"], -x["revenue"])),
+        "city_influencers": sorted([{"city": k[0], "state": k[1], "influencer_id": k[2], "influencer": names.get(k[2], "?"), "paid_bookings": v[0], "tickets": v[1], "revenue": float(v[2])} for k, v in city_inf.items()], key=lambda x: -x["revenue"]),
+        "campaign_states": sorted([{"influencer": names.get(k[0], "?"), "campaign": k[1], "state": k[2], "paid_bookings": v[0], "tickets": v[1], "revenue": float(v[2])} for k, v in camp_state.items()], key=lambda x: -x["revenue"]),
     }
 
     # ---- campaigns ----
@@ -118,8 +125,8 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
     for inf_id, c, n in db.execute(select(ReferralClick.influencer_id, ReferralClick.campaign, func.count()).where(
             *_within(ReferralClick.created_at, lo, hi), *inf_filter(ReferralClick.influencer_id)).group_by(ReferralClick.influencer_id, ReferralClick.campaign)):
         camp[(inf_id, c)]["clicks"] = n
-    for inf_id, c, n in db.execute(select(ReferralSession.influencer_id, ReferralSession.campaign, func.count()).where(
-            *_within(ReferralSession.created_at, lo, hi), *inf_filter(ReferralSession.influencer_id)).group_by(ReferralSession.influencer_id, ReferralSession.campaign)):
+    for inf_id, c, n in db.execute(select(VS.influencer_id, VS.campaign, func.count()).where(VS.influencer_id.is_not(None),
+            *_within(VS.attributed_at, lo, hi), *inf_filter(VS.influencer_id)).group_by(VS.influencer_id, VS.campaign)):
         camp[(inf_id, c)]["sessions"] = n
     for inf_id, c, n, n_paid, t, rev, com in db.execute(select(
             BA.influencer_id, BA.campaign, func.count(BA.id), func.sum(case((paid, 1), else_=0)),
@@ -133,3 +140,62 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
     } for k, v in camp.items() if k[0] in names], key=lambda x: -x["revenue"])
 
     return {"summary": summary, "influencers": influencers, "regions": region_out, "campaigns": campaigns}
+
+
+# ---------------- all website traffic (any acquisition source) ----------------
+def compute_regional(db: Session, start: date | None = None, end: date | None = None) -> dict:
+    """Visitor sessions vs bookings by acquisition source and region.
+
+    sessions        = visitor sessions created in the period (a session is one browser, not one person)
+    bookings        = website bookings paid in the period, including ones later cancelled/refunded
+    paid_bookings   = those still paid; tickets and revenue (incl. GST) count paid bookings only
+    conversion_rate = paid_bookings / sessions for the same period and slice. Bookings made by sessions created
+                      before the period still count, so short periods can over- or under-state it (can exceed 100%).
+    Counter (walk-in) sales are not website traffic and are not included.
+    """
+    lo, hi = _range(start, end)
+    paid = BA.status == "paid"
+    sess_rows = db.execute(select(VS.source, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city, func.count())
+                           .where(*_within(VS.created_at, lo, hi))
+                           .group_by(VS.source, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city)).all()
+    book_rows = db.execute(select(
+        BA.source, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city, func.count(BA.id),
+        func.sum(case((paid, 1), else_=0)), func.coalesce(func.sum(case((paid, BA.tickets), else_=0)), 0),
+        func.coalesce(func.sum(case((paid, BA.total_amount), else_=0)), 0),
+    ).where(*_within(BA.paid_at, lo, hi)).group_by(BA.source, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city)).all()
+
+    blank = lambda: {"sessions": 0, "bookings": 0, "paid_bookings": 0, "tickets": 0, "revenue": ZERO}  # noqa: E731
+    dims = {"sources": defaultdict(blank), "countries": defaultdict(blank), "states": defaultdict(blank), "cities": defaultdict(blank)}
+
+    def keys(src, cc, country, region, city):
+        st = region_bucket(cc, region)
+        return (("sources", src), ("countries", country or (cc or UNKNOWN)), ("states", st), ("cities", (city_bucket(cc, city), st)))
+
+    total = blank()
+    for src, cc, country, region, city, n in sess_rows:
+        total["sessions"] += n
+        for d, k in keys(src, cc, country, region, city):
+            dims[d][k]["sessions"] += n
+    unknown_loc = 0
+    for src, cc, country, region, city, n, n_paid, t, rev in book_rows:
+        vals = {"bookings": n, "paid_bookings": int(n_paid or 0), "tickets": int(t or 0), "revenue": Decimal(rev or 0)}
+        if not cc:
+            unknown_loc += vals["paid_bookings"]
+        for k, v in vals.items():
+            total[k] += v
+        for d, k in keys(src, cc, country, region, city):
+            for f, v in vals.items():
+                dims[d][k][f] += v
+
+    def out(v):
+        return {**v, "revenue": float(v["revenue"]), "conversion_rate": _rate(v["paid_bookings"], v["sessions"])}
+
+    for s in SOURCES:  # always list every source so empty channels are visible
+        dims["sources"][s]
+    return {
+        "summary": {**out(total), "unknown_location_bookings": unknown_loc},
+        "sources": [{"source": k, **out(v)} for k, v in sorted(dims["sources"].items(), key=lambda kv: SOURCES.index(kv[0]) if kv[0] in SOURCES else 99)],
+        "countries": sorted(({"country": k, **out(v)} for k, v in dims["countries"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
+        "states": sorted(({"state": k, **out(v)} for k, v in dims["states"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
+        "cities": sorted(({"city": k[0], "state": k[1], **out(v)} for k, v in dims["cities"].items()), key=lambda x: (-x["revenue"], -x["sessions"])),
+    }

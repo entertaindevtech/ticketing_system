@@ -55,23 +55,37 @@ class Influencer(Timestamps, Base):
     __table_args__ = (CheckConstraint("commission_rate >= 0 AND commission_rate <= 100", name="ck_influencer_rate"),)
 
 
-class ReferralSession(GeoSnapshot, Base):
-    """Anonymous visitor session established by the first valid referral click (first-click model)."""
-    __tablename__ = "referral_sessions"
+class VisitorSession(GeoSnapshot, Base):
+    """Anonymous visitor session for every website visitor (one opaque token, one GeoIP lookup).
+
+    Acquisition fields record the *first touch* and are never overwritten. Influencer attribution is a
+    separate, optional first-click claim with its own window, so geography never depends on a referral."""
+    __tablename__ = "visitor_sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    influencer_id: Mapped[int] = mapped_column(ForeignKey("influencers.id"), nullable=False, index=True)
-    campaign: Mapped[str | None] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    influencer: Mapped[Influencer] = relationship()
+    # first-touch acquisition (see app/acquisition.py)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown", server_default="unknown", index=True)
+    utm_source: Mapped[str | None] = mapped_column(String(100))
+    utm_medium: Mapped[str | None] = mapped_column(String(100))
+    utm_campaign: Mapped[str | None] = mapped_column(String(100))
+    utm_content: Mapped[str | None] = mapped_column(String(100))
+    utm_term: Mapped[str | None] = mapped_column(String(100))
+    referrer_host: Mapped[str | None] = mapped_column(String(255))  # host only; full referrer URLs can contain search terms
+    # influencer attribution (first click, own window); all three null for non-referred visitors
+    influencer_id: Mapped[int | None] = mapped_column(ForeignKey("influencers.id"), index=True)
+    campaign: Mapped[str | None] = mapped_column(String(64))
+    attributed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attribution_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    influencer: Mapped[Influencer | None] = relationship()
 
 
 class ReferralClick(Base):
     __tablename__ = "referral_clicks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     influencer_id: Mapped[int] = mapped_column(ForeignKey("influencers.id"), nullable=False)
-    session_id: Mapped[int] = mapped_column(ForeignKey("referral_sessions.id"), nullable=False, index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("visitor_sessions.id"), nullable=False, index=True)
     campaign: Mapped[str | None] = mapped_column(String(64))
     # True when the visitor already had a live attribution, so this click did not change it.
     kept_existing_attribution: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -80,14 +94,21 @@ class ReferralClick(Base):
 
 
 class BookingAttribution(Timestamps, GeoSnapshot, Base):
-    """Frozen at payment confirmation; the geo columns are a copy of the session's snapshot so
+    """One row per paid website booking (any acquisition source), frozen at payment confirmation; the geo columns are a copy of the session's snapshot so
     reporting stays stable even if session data is later purged."""
     __tablename__ = "booking_attributions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     booking_ref: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
-    influencer_id: Mapped[int] = mapped_column(ForeignKey("influencers.id"), nullable=False)
-    session_id: Mapped[int] = mapped_column(ForeignKey("referral_sessions.id"), nullable=False)
+    # null when the booking had no valid influencer attribution (most bookings)
+    influencer_id: Mapped[int | None] = mapped_column(ForeignKey("influencers.id"))
+    # null when the browser had no visitor session (storage blocked, API down at arrival)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("visitor_sessions.id"))
     campaign: Mapped[str | None] = mapped_column(String(64))
+    # copied from the session so reporting survives session expiry/purging
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown", server_default="unknown", index=True)
+    utm_source: Mapped[str | None] = mapped_column(String(100))
+    utm_medium: Mapped[str | None] = mapped_column(String(100))
+    utm_campaign: Mapped[str | None] = mapped_column(String(100))
     payment_ref: Mapped[str | None] = mapped_column(String(80))
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     visit_date: Mapped[datetime | None] = mapped_column(Date)
@@ -98,7 +119,7 @@ class BookingAttribution(Timestamps, GeoSnapshot, Base):
     total_amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="paid")  # paid | cancelled
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    influencer: Mapped[Influencer] = relationship()
+    influencer: Mapped[Influencer | None] = relationship()
     commission: Mapped["InfluencerCommission"] = relationship(back_populates="attribution", uselist=False)
     __table_args__ = (
         CheckConstraint("status IN ('paid','cancelled')", name="ck_attribution_status"),

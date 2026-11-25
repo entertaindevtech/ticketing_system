@@ -1,4 +1,5 @@
 import hmac
+from urllib.parse import urlsplit
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
@@ -54,24 +55,42 @@ events = APIRouter(prefix="/api/booking-events", dependencies=[Depends(require_e
 admin = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
 
 
-# ---------- public: referral capture ----------
-class ClickIn(BaseModel):
-    code: str = Field(max_length=64)
-    campaign: str | None = Field(default=None, max_length=128)
+# ---------- public: visitor sessions ----------
+# shortcut: user-agent keyword match only; switch to a maintained bot list if crawler traffic shows up in analytics
+BOT_HINTS = ("bot", "crawl", "spider", "slurp", "preview", "headless", "lighthouse", "facebookexternalhit", "curl", "python-requests")
+
+
+class VisitIn(BaseModel):
     session_token: str | None = Field(default=None, max_length=64)
+    ref: str | None = Field(default=None, max_length=64)
+    campaign: str | None = Field(default=None, max_length=128)
+    utm_source: str | None = Field(default=None, max_length=200)
+    utm_medium: str | None = Field(default=None, max_length=200)
+    utm_campaign: str | None = Field(default=None, max_length=200)
+    utm_content: str | None = Field(default=None, max_length=200)
+    utm_term: str | None = Field(default=None, max_length=200)
+    click_ids: list[str] = Field(default_factory=list, max_length=5)  # names only (e.g. "gclid"), never their values
+    referrer: str | None = Field(default=None, max_length=2000)
 
 
-@public.post("/referrals/click")
-def referral_click(body: ClickIn, request: Request, db: Session = Depends(get_db)):
+@public.post("/visits")
+def visit(body: VisitIn, request: Request, db: Session = Depends(get_db)):
+    """Get or create the anonymous visitor session (and record an influencer click when ?ref is valid)."""
+    ua = (request.headers.get("user-agent") or "").lower()
+    if not ua or any(h in ua for h in BOT_HINTS):
+        return {"session_token": None, "tracked": False}
     s = request.app.state.settings
     ip = client_ip(request.headers.get("x-forwarded-for"), request.client.host if request.client else None, s.trusted_proxy_hops)
-    try:
-        r = services.record_click(db, s, request.app.state.geo, body.code, body.campaign, body.session_token, ip)
-    except services.NotFound:
-        raise HTTPException(404, "Unknown or inactive referral code")
+    own = {h for h in (urlsplit(s.public_app_url).hostname, request.url.hostname) if h}
+    r = services.record_visit(
+        db, s, request.app.state.geo, existing_token=body.session_token, ip=ip, ref=body.ref, campaign=body.campaign,
+        utm={k: getattr(body, k) for k in services.UTM_KEYS}, click_ids=set(body.click_ids), referrer=body.referrer,
+        own_hosts={h[4:] if h.startswith("www.") else h for h in own},
+    )
+    live = r.session.influencer_id and services.as_utc(r.session.attribution_expires_at) > services.utcnow()
     return {
-        "session_token": r.session.token, "expires_at": r.session.expires_at.isoformat(),
-        "attributed_code": r.session.influencer.referral_code, "kept_existing": r.kept_existing,
+        "tracked": True, "session_token": r.session.token, "expires_at": r.session.expires_at.isoformat(), "created": r.created,
+        "source": r.session.source, "attributed_code": r.session.influencer.referral_code if live else None, "kept_existing": r.kept_existing,
     }
 
 
@@ -119,7 +138,9 @@ class CancelledIn(BaseModel):
 def booking_paid(body: PaidIn, db: Session = Depends(get_db), s=Depends(cfg)):
     attr = services.confirm_payment(db, s, body.booking_ref, body.session_token, body.payment_status,
                                     body.to_amounts(), body.payment_ref, body.paid_at)
-    return {"attributed": attr is not None, "influencer_code": attr.influencer.referral_code if attr else None}
+    inf = attr.influencer if attr else None
+    return {"recorded": attr is not None, "attributed": inf is not None, "influencer_code": inf.referral_code if inf else None,
+            "source": attr.source if attr else None}
 
 
 @events.post("/cancelled")
@@ -284,5 +305,17 @@ def get_analytics(
     db: Session = Depends(get_db),
 ):
     data = analytics.compute(db, date_from, date_to, influencer_id)
+    data["geoip_available"] = request.app.state.geo.available
+    return data
+
+
+@admin.get("/regional")
+def get_regional(
+    request: Request,
+    date_from: date | None = Query(default=None, alias="from"), date_to: date | None = Query(default=None, alias="to"),
+    db: Session = Depends(get_db),
+):
+    """All website visitors and bookings by acquisition source and region (not just influencer traffic)."""
+    data = analytics.compute_regional(db, date_from, date_to)
     data["geoip_available"] = request.app.state.geo.available
     return data

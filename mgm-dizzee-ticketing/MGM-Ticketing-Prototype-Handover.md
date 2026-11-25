@@ -98,7 +98,7 @@ They are covered by `tests/store.test.ts`.
 
 | Booking event | Effect on attribution and commission |
 |---|---|
-| Online payment succeeds | `reportPaid` attributes the booking only if a referral session is live |
+| Online payment succeeds | `reportPaid` records every website booking with its region and source; a commission is created only if a live influencer attribution exists (influencer handover §0) |
 | Payment declined | Nothing is sent |
 | Admin "Cancel & refund" | Commission reversed |
 | Customer requests cancellation | No change. The booking is still valid; the commission stays pending |

@@ -22,3 +22,24 @@ def test_migration_matches_models_and_downgrades(tmp_path):
         assert {c["name"] for c in insp.get_columns(name)} == {c.name for c in table.columns}, name
     command.downgrade(cfg, "base")
     assert set(inspect(create_engine(url)).get_table_names()) <= {"alembic_version"}
+
+
+def test_0002_keeps_and_backfills_existing_influencer_data(tmp_path):
+    from sqlalchemy import text
+    url = f"sqlite:///{tmp_path / 'data.db'}"
+    cfg = Config(os.path.join(HERE, "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "0001")
+    eng = create_engine(url)
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO influencers (id, name, platform, referral_code, commission_rate, active) VALUES (1,'A','Instagram','AAA111',8,1)"))
+        c.execute(text("INSERT INTO referral_sessions (id, token, influencer_id, created_at, expires_at, geo_region) VALUES (1,'tok',1,'2026-11-01','2026-12-01','Kerala')"))
+        c.execute(text("INSERT INTO booking_attributions (id, booking_ref, influencer_id, session_id, paid_at, tickets, ticket_net_amount, addons_amount, tax_amount, total_amount, status, geo_region) "
+                       "VALUES (1,'MGM-OLD001',1,1,'2026-11-02',2,100,0,18,118,'paid','Kerala')"))
+    command.upgrade(cfg, "head")
+    with eng.connect() as c:
+        s = c.execute(text("SELECT token, influencer_id, source, attributed_at, attribution_expires_at, expires_at, geo_region FROM visitor_sessions")).one()
+        b = c.execute(text("SELECT booking_ref, session_id, source, geo_region FROM booking_attributions")).one()
+    assert s.token == "tok" and s.influencer_id == 1 and s.source == "influencer" and s.geo_region == "Kerala"
+    assert s.attributed_at is not None and s.attribution_expires_at == s.expires_at
+    assert tuple(b) == ("MGM-OLD001", 1, "influencer", "Kerala")

@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from app.geo import GeoLookup, client_ip, region_bucket
-from app.models import BookingAttribution, InfluencerCommission, ReferralClick, ReferralSession, utcnow
+from app.models import BookingAttribution, InfluencerCommission, ReferralClick, VisitorSession, utcnow
 
 from .conftest import ADMIN, BOOKING, click, make_influencer, pay
 
@@ -25,12 +25,15 @@ def test_create_influencer_generates_url_and_rejects_duplicate_code(client):
     assert bad.status_code == 422
 
 
-def test_unknown_and_inactive_codes_are_rejected(client):
+def test_unknown_and_inactive_codes_are_rejected(client, db):
+    # The visit is still tracked (geography for all visitors) but never attributed or counted as a click.
     inf = make_influencer(client)
-    assert click(client, code="NOPE99").status_code == 404
-    assert click(client, code="<script>").status_code == 404
+    for code in ("NOPE99", "<script>"):
+        r = click(client, code=code).json()
+        assert r["tracked"] and r["attributed_code"] is None and r["source"] != "influencer"
     client.patch(f"/api/admin/influencers/{inf['id']}", json={"active": False}, headers=ADMIN)
-    assert click(client).status_code == 404
+    assert click(client).json()["attributed_code"] is None
+    assert db.scalar(select(func.count()).select_from(ReferralClick)) == 0
 
 
 # ---------- clicks, sessions, first-click attribution ----------
@@ -39,7 +42,7 @@ def test_click_records_session_and_geo_snapshot(client, db, app):
     r = click(client, campaign="Summer2026")
     assert r.status_code == 200
     token = r.json()["session_token"]
-    s = db.scalar(select(ReferralSession).where(ReferralSession.token == token))
+    s = db.scalar(select(VisitorSession).where(VisitorSession.token == token))
     assert (s.geo_region, s.geo_city, s.campaign) == ("Tamil Nadu", "Chennai", "summer2026")
     assert db.scalar(select(func.count()).select_from(ReferralClick)) == 1
     assert app.state.geo.calls == ["49.36.10.10"]
@@ -54,7 +57,7 @@ def test_first_click_wins_within_window(client, db):
     # B still gets credit for the click, but not the session
     clicks = db.execute(select(ReferralClick.influencer_id, ReferralClick.kept_existing_attribution)).all()
     assert len(clicks) == 2 and clicks[1][1] is True
-    assert db.scalar(select(func.count()).select_from(ReferralSession)) == 1
+    assert db.scalar(select(func.count()).select_from(VisitorSession)) == 1
     assert pay(client, "MGM-AAA001", tok).json()["influencer_code"] == "AAA111"
 
 
@@ -70,10 +73,12 @@ def test_expired_attribution_is_replaced_and_not_paid_out(client, db):
     make_influencer(client, code="AAA111")
     make_influencer(client, code="BBB222", name="Second")
     tok = click(client, code="AAA111").json()["session_token"]
-    s = db.scalar(select(ReferralSession).where(ReferralSession.token == tok))
-    s.created_at, s.expires_at = utcnow() - timedelta(days=31), utcnow() - timedelta(days=1)
+    s = db.scalar(select(VisitorSession).where(VisitorSession.token == tok))
+    s.created_at = s.attributed_at = utcnow() - timedelta(days=31)
+    s.expires_at = s.attribution_expires_at = utcnow() - timedelta(days=1)
     db.commit()
-    assert pay(client, "MGM-OLD001", tok).json()["attributed"] is False  # past the 30-day window
+    r = pay(client, "MGM-OLD001", tok).json()
+    assert r["attributed"] is False and r["recorded"] is True  # past the 30-day window: sale counted, no commission
     r = click(client, code="BBB222", token=tok).json()
     assert r["session_token"] != tok and r["attributed_code"] == "BBB222" and not r["kept_existing"]
 
@@ -81,7 +86,7 @@ def test_expired_attribution_is_replaced_and_not_paid_out(client, db):
 def test_session_window_is_30_days(client, db):
     make_influencer(client)
     tok = click(client).json()["session_token"]
-    s = db.scalar(select(ReferralSession).where(ReferralSession.token == tok))
+    s = db.scalar(select(VisitorSession).where(VisitorSession.token == tok))
     assert abs((s.expires_at - s.created_at) - timedelta(days=30)) < timedelta(seconds=1)
 
 
@@ -135,7 +140,7 @@ def test_click_and_booking_succeed_when_geo_reader_errors(client, app, monkeypat
 def test_paid_booking_creates_commission_on_ticket_net(client, db):
     make_influencer(client, rate=8)
     tok = click(client).json()["session_token"]
-    assert pay(client, "MGM-PAID01", tok).json() == {"attributed": True, "influencer_code": "RAHUL01"}
+    assert pay(client, "MGM-PAID01", tok).json() == {"recorded": True, "attributed": True, "influencer_code": "RAHUL01", "source": "influencer"}
     c = db.scalar(select(InfluencerCommission))
     # ticket net = 2547 - 0 - 349 = 2198 (GST and add-ons excluded); 8% = 175.84
     assert (c.basis_amount, c.amount, c.rate, c.status) == (Decimal("2198.00"), Decimal("175.84"), Decimal("8.00"), "pending")

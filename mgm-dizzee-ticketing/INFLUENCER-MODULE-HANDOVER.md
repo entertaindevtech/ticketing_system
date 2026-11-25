@@ -1,5 +1,7 @@
 # Influencer & Regional Sales Intelligence — Technical Handover
 
+*Updated 25 Nov 2026: regional intelligence now covers all visitors and bookings (§0).*
+
 Branch: `feat/influencer-regional-intelligence` · Date: 25 Nov 2026
 
 This adds influencer management, referral attribution, approximate regional (IP-based) sales intelligence and commission management to the MGM ticketing app.
@@ -7,6 +9,122 @@ This adds influencer management, referral attribution, approximate regional (IP-
 > **Read §12 first.** The rest of the app is still a browser-only prototype (bookings live in `localStorage`, payment is simulated). The new module is a real backend, but its booking and payment events still come from that prototype front-end. It is ready for review, **not** for production money flows.
 
 ---
+
+## 0. Universal visitor sessions and regional intelligence (migration `0002`)
+
+Geographic intelligence now covers **every website visitor and every website booking**, not only influencer traffic. This generalizes the existing referral-session design; it is not a second tracking system. Sections 1–12 below describe the influencer module and still apply. Where they say "referral session", read "visitor session".
+
+**What changed in the session architecture.**
+- `referral_sessions` was **renamed** (not rebuilt) to `visitor_sessions`.
+- `influencer_id` is now optional.
+- Each session now also records its **first-touch acquisition** (`source`, the five `utm_*` fields, and `referrer_host`, which is the host only).
+- The influencer claim has its **own window** (`attributed_at` / `attribution_expires_at`).
+- `POST /api/visits` replaces `POST /api/referrals/click`. On page load, `captureVisit()` (`src/referral.ts`) calls it only when the browser has no live session or the URL carries `?ref=`. A returning visitor causes no request.
+- Admin (`#admin`) and staff (`#staff`) screens never create sessions.
+- Simple user-agent bot hints are not tracked.
+
+**Direct vs influencer visitors.**
+- **Source** = how the session *first* arrived. It is classified once, at session creation, and never overwritten.
+- **Influencer attribution** is a separate first-click claim:
+  1. A visitor who arrives directly and later follows an influencer link keeps `source = direct` but gains the attribution, so the booking earns commission.
+  2. A visitor who arrives through an influencer link and later returns directly, through search or another influencer's link keeps the **first influencer** for the full window (default 30 days).
+  3. An unknown or inactive `?ref` is ignored: the visit is still tracked, and no click or attribution is recorded.
+- Commission eligibility depends only on the attribution, never on `source`.
+
+**Classification** (`backend/app/acquisition.py`, the only place these rules live). First match wins:
+
+| Signal | Source |
+|---|---|
+| Valid influencer `?ref` | influencer |
+| Ad click id (`gclid`, `msclkid`, `dclid`, `gbraid`, `wbraid`; names only, values are never sent) | paid |
+| `utm_medium` in the paid group (cpc, ppc, display…) | paid |
+| `utm_medium` in the social group | social |
+| `utm_medium` in the organic group | organic |
+| `utm_medium` = referral | referral |
+| Any other UTM tag (email, sms, newsletter…) | paid (shown as "Paid / tagged campaign") |
+| Search-engine referrer | organic |
+| Social-site referrer | social |
+| Other external referrer | referral (external) |
+| No referrer, or our own host | direct |
+| Booking with no visitor session at all | unknown |
+
+The lists of search engines, social sites and medium groups are constants in that file.
+
+**Universal geolocation.**
+- The existing MaxMind lookup now runs **once per visitor session, for every visitor**: at session creation, never per page.
+- The same trusted-proxy rule (`TRUSTED_PROXY_HOPS`) and validation apply, and raw IPs are still never stored.
+- An invalid or untrusted IP header gives an Unknown region; it does not spoof one.
+- A missing database or a failed lookup gives Unknown, and the visit and booking still succeed.
+- Partial results (country only) are kept. Non-Indian visitors show as "Outside India".
+
+**Booking-level snapshots.**
+- `booking_attributions` now holds **one row per paid website booking from any source**:
+  - `influencer_id` is null unless a live attribution existed at payment;
+  - `session_id` is null if the browser had no session.
+- At payment the row **copies** the session's region, `source`, `utm_source`, `utm_medium` and `utm_campaign`. Later session expiry, retention purges or a newer GeoLite database therefore never change historical reports.
+- A booking with no session is recorded as `unknown`, with an unknown location. The booking itself always succeeds; it is client-side.
+- `booking_ref` stays unique, so retried callbacks and modifications never create a second row or commission.
+- **Counter (walk-in) sales are not website traffic and are not recorded here.**
+
+**Acquisition-source and regional analytics** (`GET /api/admin/regional`, shown in Admin › Influencers & Regions › **Regions & channels**):
+
+| Metric | Definition |
+|---|---|
+| Visitor sessions | Sessions created in the period. **One per browser per 30 days, not individual people:** the same person on two devices counts twice, and a cleared browser counts again. The dashboard labels this "≈ unique visitors" for that reason. |
+| Bookings | Website bookings paid in the period, including those later cancelled |
+| Paid bookings | Bookings still paid. Tickets and revenue (incl. GST) count only these |
+| Unknown-location bookings | Paid bookings with no resolved country (no session, or an unresolved IP) |
+| Conversion rate | paid bookings ÷ visitor sessions, for the same period and the same slice (source, country, state or city) |
+
+Two limitations of the conversion rate:
+- It is a **period ratio, not a cohort**. A booking whose session started before the period still counts, so short date ranges can over- or under-state it, and it can exceed 100%.
+- Bookings without a session add to bookings but not to sessions.
+
+Breakdowns are available by **source, country, state and city**. Indian reporting buckets states and cities, and "Outside India" and "Unknown" are kept as their own rows. The **Influencer performance** tab is unchanged in meaning; it still counts only influencer-attributed bookings and now adds **influencer × city** and **campaign × state** views. An influencer's "sessions" are now sessions that *received* its attribution, dated by attribution time.
+
+**Migration `0002`** is non-destructive and reversible:
+- It renames the table and alters columns to nullable.
+- It adds the new columns and indexes: `visitor_sessions(created_at)`, `visitor_sessions(source)` and `booking_attributions(source)`.
+- It backfills every existing session and booking as `source = influencer`, with `attributed_at = created_at` and `attribution_expires_at = expires_at`.
+- A test seeds 0001-era data, upgrades it and checks that the data is preserved.
+- Downgrading deletes non-influencer rows, because the old schema cannot hold them.
+
+**New environment variable:** `VISITOR_SESSION_DAYS` (default 30). Nothing else changed in the Railway setup: no new service and no new storage. The GeoLite volume at `/data` matters more now, because it covers all visitors.
+
+**Privacy.**
+- Collected per session: a random opaque token, the first-visit time, approximate country/state/city, the first-touch source, UTM tags and the referrer **host**. Full referrer URLs are not kept, because they can contain search terms.
+- Never collected: raw IPs, user agents, fingerprints or click-ID values.
+- The token lives in `localStorage` (`mgm-visitor-session`). Anyone can clear it.
+- The admin UI shows aggregates only. Booking rows link to bookings by reference, as before.
+- Before launch:
+  - name this analytics use in the privacy notice;
+  - set a retention period for `visitor_sessions` and `referral_clicks` (suggested 13 months; booking snapshots keep their own copy);
+  - decide whether to honour Global Privacy Control / Do-Not-Track. Skipping `captureVisit()` when `navigator.globalPrivacyControl` is set would make those visitors' bookings show as `unknown`, but commission attribution would then also be lost.
+
+**Testing for this extension (25 Nov):**
+- **Backend:** 64 passed on SQLite, comprising the 34 earlier tests plus 30 new ones:
+  - 13 classification rules;
+  - creating direct, influencer, organic, external-referral and paid sessions, and capturing UTM tags;
+  - session persistence with no repeat lookup; session expiry; bot exclusion; a spoofed IP header giving Unknown;
+  - a direct return visit keeping the influencer; direct-first then influencer link;
+  - no commission for non-influencer bookings;
+  - snapshot stability after the session's region changes;
+  - a booking without a session recorded as unknown;
+  - no duplicate record on modification;
+  - aggregate accuracy by source, state, city and country, with cancelled bookings excluded;
+  - the influencer report staying influencer-only;
+  - the admin guard on the new endpoint;
+  - the 0002 migration preserving and backfilling data.
+- **Front-end:** `npm test` 10 passed; `tsc` clean; production and single-file builds succeed.
+- **Browser (built-in, backend on SQLite after running 0001→0002 at startup):**
+  1. A UTM `cpc` visit created a **paid** session and the URL was cleaned.
+  2. A real UI booking by that visitor was recorded with source paid, region Unknown (a localhost IP with no GeoLite file) and **0 commissions**.
+  3. The same browser then followed `?ref=REGN01`: same session, attribution added, source still paid, still one session.
+  4. The Regions & channels tab rendered all KPIs, the channel table, revenue by channel and the regional funnel. A grid overflow found here was fixed.
+  5. The Influencer performance tab showed the new breakdown selector. No console errors.
+- **PostgreSQL: not tested.** The Docker daemon was not running. An attempt to run an embedded PostgreSQL (pip `pgserver`) was blocked by this session's permission policy, so I did not pursue it. The migration renders as PostgreSQL DDL (§3), but has never been executed against PostgreSQL. Run `TEST_DATABASE_URL=postgresql://… pytest` before merging.
+
+**Honest scope.** These numbers cover bookings that reach the server through the browser event outbox. Bookings are still stored only in each browser (`localStorage`), and booking events are still browser-generated (§12). Anyone can post fabricated "paid" events; that now pollutes **all** sales figures, not only commissions. Until bookings and payment confirmation move server-side, this is **website analytics with known gaps**, not a reconciled sales ledger. It must not be used for financial reporting.
 
 ## 1. Architecture and decisions
 
@@ -61,7 +179,7 @@ src/influencers.tsx                               Admin › Influencers & Region
 *(The consolidation commit also added `src/counter.tsx`, `tests/store.test.ts` and `scripts/build-static.mjs`, and migrated the static-only features into `store.ts`, `admin.tsx` and `customer.tsx`. See [MGM-Ticketing-Prototype-Handover.md](MGM-Ticketing-Prototype-Handover.md) §1–3.)*
 
 **Changed in the first influencer commit (minimal, additive):**
-- `src/main.tsx`: one line that calls `captureReferral()` on load.
+- `src/main.tsx`: one line that calls `captureReferral()` on load (now `captureVisit()`, §0).
 - `src/customer.tsx`: one `reportPaid(b)` call after a successful payment.
 - `src/admin.tsx`:
   - the new nav entry under a "Marketing" group;
@@ -81,7 +199,7 @@ src/influencers.tsx                               Admin › Influencers & Region
 | Table | Purpose | Key constraints |
 |---|---|---|
 | `influencers` | profile, platform, contact, `commission_rate` (%), `active` | `referral_code` UNIQUE; CHECK rate 0–100 |
-| `referral_sessions` | anonymous visitor session created by the first valid click; holds the **geo snapshot** | `token` UNIQUE; FK influencer; `expires_at` |
+| `visitor_sessions` (was `referral_sessions`, see §0) | anonymous session for every visitor; geo snapshot, first-touch source, optional influencer claim | `token` UNIQUE; FK influencer (nullable); `expires_at` |
 | `referral_clicks` | every referral visit (including repeats); `kept_existing_attribution` flags clicks that did not change attribution | FK influencer, session; index (influencer_id, created_at) |
 | `booking_attributions` | one per referred **paid** booking; amounts plus a frozen copy of the geo snapshot; `status` paid/cancelled | `booking_ref` UNIQUE (idempotency); CHECK status |
 | `influencer_commissions` | rate snapshot, basis, amount, status, approval/payout/reversal timestamps | `booking_attribution_id` UNIQUE (one commission per booking); CHECK status |
@@ -94,7 +212,7 @@ Run migrations: `cd backend && alembic upgrade head`. The Docker start command r
 ## 4. Referral attribution lifecycle
 
 1. A visitor opens `https://<domain>/?ref=RAHUL01&campaign=summer2026`. The URL is generated from `PUBLIC_APP_URL` and the code.
-2. `captureReferral()` removes `ref`/`campaign` from the address bar, so a refresh or re-share doesn't count again. It then calls `POST /api/referrals/click` with any token it already holds.
+2. `captureVisit()` removes the tracking parameters from the address bar, so a refresh or re-share doesn't count again. It then calls `POST /api/visits` with any token it already holds (§0).
 3. The server validates the code format and that the influencer exists and is active (404 otherwise; the front-end ignores it). Then:
    - **Live session already held** (first-click model): the server keeps it and records the click for the clicked influencer with `kept_existing_attribution=true`. Influencer A stays attributed.
    - **No session, or it has expired**: the server creates a new session (30-day expiry), does the **one** GeoIP lookup (§5), and records the click.
@@ -102,11 +220,11 @@ Run migrations: `cd backend && alembic upgrade head`. The Docker start command r
 5. On payment success, `reportPaid` sends the booking reference, token and amounts. The server attributes the booking only if the payment status is `paid` and the session exists and is unexpired at payment time. It then freezes influencer, campaign and geo snapshot onto the booking row.
 6. `booking_ref` is unique, so repeats are ignored. A later call with a different token cannot re-attribute the booking.
 
-A booking without a referral session is never sent to the server.
+Since §0, every website booking is sent; only bookings with a live influencer attribution create a commission.
 
 ## 5. GeoIP lookup lifecycle
 
-- **When:** only when a referral session is created. It never runs on page views, and it never blocks booking.
+- **When:** only when a visitor session is created, for any visitor (§0). It never runs on page views, and it never blocks booking.
 - **IP source:** `X-Forwarded-For`. The server trusts only the last `TRUSTED_PROXY_HOPS` entries (default 1 = the Railway edge). Entries further left are client-supplied and ignored, which prevents location spoofing. Private and reserved addresses are not looked up. **Check after the first Railway deploy:** click a referral link from a known location and confirm the region. If everything shows Unknown, adjust `TRUSTED_PROXY_HOPS`.
 - **Raw IPs are never stored and never shown.** Only country code and name, state/region and city are kept.
 - **Database:** MaxMind **GeoLite2 City (global)** MMDB, read with `maxminddb`, at `GEOIP_DB_PATH`.
@@ -167,7 +285,8 @@ The OpenAPI docs are at `/docs` and `/openapi.json`.
 | Method & path | Auth | Purpose |
 |---|---|---|
 | `GET /api/health` | – | health check (checks the DB; reports `geoip_available`) |
-| `POST /api/referrals/click` | – | record a click and get or keep the session token |
+| `POST /api/visits` | – | get or create the visitor session; records an influencer click for a valid `ref` (§0) |
+| `GET /api/admin/regional?from&to` | `X-Admin-Token` | all-traffic sessions, bookings and conversion by source, country, state and city (§0) |
 | `POST /api/booking-events/paid` · `/cancelled` · `/modified` | optional `X-Booking-Events-Token` | booking lifecycle (§1) |
 | `GET/POST /api/admin/influencers`, `PATCH /api/admin/influencers/{id}` | `X-Admin-Token` | influencer management |
 | `GET /api/admin/commissions?influencer_id&status&from&to` | `X-Admin-Token` | list or filter commissions |
@@ -198,7 +317,8 @@ See `backend/.env.example`.
 | `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `first_click` / `30` |
 | `COMMISSION_BASIS` | – | `ticket_net_ex_gst` (default) or `total_ex_gst` |
 | `BOOKING_EVENTS_TOKEN` | – | set only once events come from a server (§12) |
-| `MAX_BOOKINGS_PER_SESSION` | – | default `5`; bookings beyond this per referral session are not attributed |
+| `MAX_BOOKINGS_PER_SESSION` | – | default `5`; influencer-attributed bookings per session beyond this get no commission (they are still recorded) |
+| `VISITOR_SESSION_DAYS` | – | default `30`; lifetime of an anonymous visitor session |
 | `CORS_ORIGINS` | – | only if the front-end is served from another origin |
 | `VITE_API_URL` | – | front-end build-time; leave empty for same-origin (default) |
 
@@ -342,10 +462,10 @@ Verified in the UI, with server state checked after each step:
    - Not stored: IP addresses, user agents, or any new personal data.
    - The booking reference links this to the booking, which itself holds the customer's contact details in the existing system.
    - Purpose: influencer attribution and commission only.
-   - Before launch, add a line to the privacy notice ("we estimate your approximate region from your IP address to measure marketing performance") and set a retention period for `referral_clicks` and `referral_sessions`, for example 13 months.
+   - Before launch, add a line to the privacy notice ("we estimate your approximate region from your IP address to measure marketing performance") and set a retention period for `referral_clicks` and `visitor_sessions`, for example 13 months.
 9. **Required before a real payment gateway (Razorpay).** None of these are done; the current flow is a prototype.
    1. **Persist bookings on the server.** Add a `bookings` table with ticket rows. The browser stops being the system of record, and the booking reference is created server-side.
-   2. **Create the order on the server, not in the browser.** The server creates the Razorpay order (amount computed server-side from the cart, never trusted from the client) and stores `order_id ↔ booking_ref ↔ referral session token`. The referral token is attached at order creation, so the browser can never choose it at payment time.
+   2. **Create the order on the server, not in the browser.** The server creates the Razorpay order (amount computed server-side from the cart, never trusted from the client) and stores `order_id ↔ booking_ref ↔ visitor session token`. The token is attached at order creation, so the browser can never choose it at payment time.
    3. **Make the signed webhook the only "paid" trigger.**
       - Verify `X-Razorpay-Signature` (HMAC-SHA256 with the webhook secret) on `payment.captured` / `order.paid`, then call `services.confirm_payment`.
       - Its idempotency by `booking_ref` already absorbs webhook retries. Also store the Razorpay `payment_id` with a unique constraint.

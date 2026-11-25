@@ -18,6 +18,8 @@ class Settings:
     attribution_model: str = field(default_factory=lambda: os.environ.get("ATTRIBUTION_MODEL", "first_click"))
     attribution_window_days: int = field(default_factory=lambda: _int("ATTRIBUTION_WINDOW_DAYS", 30))
     max_bookings_per_session: int = field(default_factory=lambda: _int("MAX_BOOKINGS_PER_SESSION", 5))
+    # lifetime of an anonymous visitor session (re-created after this; extended while an influencer attribution is live)
+    visitor_session_days: int = field(default_factory=lambda: _int("VISITOR_SESSION_DAYS", 30))
     # ticket_net_ex_gst = ticket revenue after discounts, excluding GST and add-ons (default)
     # total_ex_gst      = everything the customer paid except GST (tickets + add-ons)
     commission_basis: str = field(default_factory=lambda: os.environ.get("COMMISSION_BASIS", "ticket_net_ex_gst"))

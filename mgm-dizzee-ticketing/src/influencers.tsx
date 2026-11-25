@@ -17,7 +17,8 @@ type Region = { paid_bookings: number; tickets: number; revenue: number };
 type Analytics = {
   summary: { revenue: number; paid_bookings: number; attributed_bookings: number; tickets: number; clicks: number; sessions: number; conversion_rate: number; commission_pending: number; commission_paid: number };
   influencers: Perf[];
-  regions: { states: (Region & { state: string })[]; cities: (Region & { city: string; state: string })[]; state_influencers: (Region & { state: string; influencer: string })[] };
+  regions: { states: (Region & { state: string })[]; cities: (Region & { city: string; state: string })[]; state_influencers: (Region & { state: string; influencer: string })[];
+    city_influencers: (Region & { city: string; state: string; influencer: string })[]; campaign_states: (Region & { influencer: string; campaign: string; state: string })[] };
   campaigns: { influencer: string; campaign: string; clicks: number; sessions: number; attributed_bookings: number; paid_bookings: number; conversion_rate: number; tickets: number; revenue: number; commission: number }[];
   geoip_available: boolean;
 };
@@ -62,22 +63,23 @@ const ErrorBox = ({ text, retry }: { text: string; retry?: () => void }) => <div
 // ---------- root ----------
 export default function InfluencerModule() {
   const [token, setToken] = useState(() => { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; } });
-  const [tab, setTab] = useState<"overview" | "influencers" | "commissions">("overview");
+  const [tab, setTab] = useState<"regional" | "overview" | "influencers" | "commissions">("regional");
   const signOut = useCallback(() => { try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } setToken(""); }, []);
   const call = useApi(token, signOut);
   if (!token) return <TokenGate onToken={(t) => { try { sessionStorage.setItem(TOKEN_KEY, t); } catch { /* ignore */ } setToken(t); }} />;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-1.5">
-        {([["overview", "Performance & regions"], ["influencers", "Influencers"], ["commissions", "Commissions"]] as const).map(([k, l]) => (
+        {([["regional", "Regions & channels"], ["overview", "Influencer performance"], ["influencers", "Influencers"], ["commissions", "Commissions"]] as const).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${tab === k ? "bg-navy-950 text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300"}`}>{l}</button>
         ))}
         <button onClick={signOut} className="ml-auto text-xs text-slate-500 hover:text-navy-950 flex items-center gap-1"><Icon name="logout" size={14} />Disconnect</button>
       </div>
+      {tab === "regional" && <RegionalDashboard call={call} />}
       {tab === "overview" && <Overview call={call} />}
       {tab === "influencers" && <InfluencerList call={call} />}
       {tab === "commissions" && <Commissions call={call} />}
-      <p className="text-[11px] text-slate-400">Regions are approximate, estimated from the visitor's IP address at their first referral click — not the customer's address. This product includes GeoLite Data created by MaxMind, available from <a className="underline" href="https://www.maxmind.com" target="_blank" rel="noreferrer">https://www.maxmind.com</a>.</p>
+      <p className="text-[11px] text-slate-400">Regions are approximate, estimated from the visitor's IP address at their first visit (one lookup per visitor session) — not the customer's address. This product includes GeoLite Data created by MaxMind, available from <a className="underline" href="https://www.maxmind.com" target="_blank" rel="noreferrer">https://www.maxmind.com</a>.</p>
     </div>
   );
 }
@@ -104,6 +106,69 @@ function TokenGate({ onToken }: { onToken: (t: string) => void }) {
   );
 }
 
+// ---------- all website traffic: overall regional sales, acquisition channels, regional funnel ----------
+type Funnel = { sessions: number; bookings: number; paid_bookings: number; tickets: number; revenue: number; conversion_rate: number };
+type Regional = {
+  summary: Funnel & { unknown_location_bookings: number };
+  sources: (Funnel & { source: string })[]; countries: (Funnel & { country: string })[];
+  states: (Funnel & { state: string })[]; cities: (Funnel & { city: string; state: string })[]; geoip_available: boolean;
+};
+const SOURCE_LABEL: Record<string, string> = { influencer: "Influencer referral", direct: "Direct", organic: "Organic search", paid: "Paid / tagged campaign", social: "Social", referral: "External referral", unknown: "Unknown (no session)" };
+
+function FunnelTable({ rows, first }: { rows: (Funnel & { label: React.ReactNode; key: string })[]; first: string }) {
+  if (!rows.length) return <Empty text="No visitor sessions or bookings in this period." />;
+  return (
+    <div className="overflow-x-auto -mx-5"><table className="w-full"><thead className="bg-slate-50"><tr><Th>{first}</Th><Th className="text-right">Visitor sessions</Th><Th className="text-right">Bookings</Th><Th className="text-right">Paid bookings</Th><Th className="text-right">Conversion</Th><Th className="text-right">Tickets</Th><Th className="text-right">Revenue</Th></tr></thead>
+      <tbody className="divide-y divide-slate-100">{rows.map((r) => <tr key={r.key}><Td className="font-medium">{r.label}</Td><Td className="text-right tabular-nums">{num(r.sessions)}</Td><Td className="text-right tabular-nums">{num(r.bookings)}</Td><Td className="text-right tabular-nums">{num(r.paid_bookings)}</Td><Td className="text-right tabular-nums">{r.sessions ? pct(r.conversion_rate) : <span className="text-slate-300">—</span>}</Td><Td className="text-right tabular-nums">{num(r.tickets)}</Td><Td className="text-right font-semibold tabular-nums">{inr(r.revenue)}</Td></tr>)}</tbody></table></div>
+  );
+}
+
+function RegionalDashboard({ call }: { call: Call }) {
+  const [from, setFrom] = useState(""); const [to, setTo] = useState("");
+  const [level, setLevel] = useState<"state" | "city" | "country">("state");
+  const { data, error, loading, reload } = useLoad(() => call<Regional>(`/regional${qs({ from, to })}`), [call, from, to]);
+  const regionRows = !data ? [] : level === "state" ? data.states.map((r) => ({ ...r, key: r.state, label: r.state }))
+    : level === "city" ? data.cities.map((r) => ({ ...r, key: r.city + "|" + r.state, label: <>{r.city}<span className="ml-1 text-xs text-slate-400">{r.city === r.state ? "" : r.state}</span></> }))
+    : data.countries.map((r) => ({ ...r, key: r.country, label: r.country }));
+  return (
+    <div className="space-y-5">
+      <div className="card-flat p-3 flex flex-wrap gap-2 items-end">
+        <Field label="From"><DateInput value={from} onChange={setFrom} placeholder="All time" clearable max={to || undefined} /></Field>
+        <Field label="To"><DateInput value={to} onChange={setTo} placeholder="Today" clearable min={from || undefined} /></Field>
+        <Button variant="outline" icon="refresh" onClick={reload}>Refresh</Button>
+        <span className="text-xs text-slate-500 ml-auto max-w-md">All online visitors and website bookings, whatever brought them. Sessions are counted by first-visit date, bookings by payment date. Counter (walk-in) sales are not included.</span>
+      </div>
+      {error && <ErrorBox text={error} retry={reload} />}
+      {loading && !data && <Loading />}
+      {data && (<>
+        {!data.geoip_available && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex gap-2"><Icon name="alert" size={16} className="mt-0.5" />GeoLite2 database not loaded on the server — new visitors are being recorded under “Unknown” region.</div>}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger">
+          <Kpi label="Visitor sessions (≈ unique visitors)" value={num(data.summary.sessions)} icon="users" sub="One per browser per 30 days — not individual people" />
+          <Kpi label="Bookings" value={num(data.summary.bookings)} icon="file" sub="Paid in period, incl. later cancelled" />
+          <Kpi label="Paid bookings" value={num(data.summary.paid_bookings)} icon="checkCircle" tone="green" sub="Excludes cancelled / refunded" />
+          <Kpi label="Session → paid booking" value={pct(data.summary.conversion_rate)} icon="percent" tone="sky" />
+          <Kpi label="Tickets sold" value={num(data.summary.tickets)} icon="ticket" />
+          <Kpi label="Booking revenue" value={inr(data.summary.revenue)} icon="rupee" tone="yellow" sub="Paid bookings · incl. GST" />
+          <Kpi label="Unknown-location bookings" value={num(data.summary.unknown_location_bookings)} icon="alert" tone="amber" sub="No session or unresolved IP" />
+          <Kpi label="Cancelled / refunded" value={num(data.summary.bookings - data.summary.paid_bookings)} icon="refresh" tone="red" sub="Excluded from paid figures" />
+        </div>
+        <div className="grid lg:grid-cols-[1fr_360px] gap-5">
+          <Card className="min-w-0" title="Acquisition channels" action={<span className="text-xs text-slate-400">First touch of each visitor session</span>}>
+            <FunnelTable first="Channel" rows={data.sources.map((r) => ({ ...r, key: r.source, label: SOURCE_LABEL[r.source] || r.source }))} />
+          </Card>
+          <Card className="min-w-0" title="Revenue by channel">
+            {data.summary.revenue ? <HBars data={data.sources.filter((r) => r.revenue > 0).map((r) => ({ label: SOURCE_LABEL[r.source] || r.source, value: r.revenue, sub: `${num(r.paid_bookings)} paid bookings` }))} fmt={inr} /> : <Empty text="No paid website bookings in this period." />}
+          </Card>
+        </div>
+        <Card title="Regional traffic → booking funnel" action={<div className="w-40"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Region level" options={[{ value: "state", label: "By state" }, { value: "city", label: "By city" }, { value: "country", label: "By country" }]} /></div>}>
+          <FunnelTable first={level === "state" ? "State / region" : level === "city" ? "City" : "Country"} rows={regionRows} />
+          <p className="mt-3 text-[11px] text-slate-500">Conversion = paid bookings ÷ visitor sessions in the same period and region. A booking can come from a session that started before the period, so short date ranges can over- or under-state it. “Outside India” and “Unknown” are kept as their own rows rather than dropped.</p>
+        </Card>
+      </>)}
+    </div>
+  );
+}
+
 // ---------- overview: KPIs, influencer table, regions, campaigns ----------
 type SortKey = keyof Perf;
 function Overview({ call }: { call: Call }) {
@@ -113,6 +178,7 @@ function Overview({ call }: { call: Call }) {
   const [sort, setSort] = useState<{ k: SortKey; desc: boolean }>({ k: "revenue", desc: true });
   const [detail, setDetail] = useState<Perf | null>(null);
   const [stateSel, setStateSel] = useState("all");
+  const [level, setLevel] = useState<"state" | "city" | "campaign">("state");
 
   const rows = useMemo(() => (data?.influencers || [])
     .filter((i) => (platform === "all" || i.platform === platform) && (!q || `${i.name} ${i.referral_code}`.toLowerCase().includes(q.toLowerCase())))
@@ -172,9 +238,12 @@ function Overview({ call }: { call: Call }) {
           </Card>
         </div>
 
-        <Card title="Influencers by region" action={<div className="w-52"><Select value={stateSel} onChange={setStateSel} ariaLabel="State" options={[{ value: "all", label: "All regions" }, ...data.regions.states.map((s) => ({ value: s.state, label: s.state }))]} /></div>}>
-          {data.regions.state_influencers.length ? <div className="overflow-x-auto -mx-5"><table className="w-full"><thead className="bg-slate-50"><tr><Th>Region</Th><Th>Influencer</Th><Th className="text-right">Paid bookings</Th><Th className="text-right">Tickets</Th><Th className="text-right">Revenue</Th></tr></thead>
-            <tbody className="divide-y divide-slate-100">{data.regions.state_influencers.filter((r) => stateSel === "all" || r.state === stateSel).map((r) => <tr key={r.state + r.influencer}><Td>{r.state}</Td><Td className="font-medium">{r.influencer}</Td><Td className="text-right">{num(r.paid_bookings)}</Td><Td className="text-right">{num(r.tickets)}</Td><Td className="text-right font-semibold">{inr(r.revenue)}</Td></tr>)}</tbody></table></div> : <Empty text="No paid influencer bookings in this period." />}
+        <Card title="Influencers by region" action={<div className="flex gap-2"><div className="w-44"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Breakdown" options={[{ value: "state", label: "Influencer × state" }, { value: "city", label: "Influencer × city" }, { value: "campaign", label: "Campaign × state" }]} /></div><div className="w-44"><Select value={stateSel} onChange={setStateSel} ariaLabel="State" options={[{ value: "all", label: "All regions" }, ...data.regions.states.map((s) => ({ value: s.state, label: s.state }))]} /></div></div>}>
+          {(() => {
+            const rows = (level === "state" ? data.regions.state_influencers : level === "city" ? data.regions.city_influencers : data.regions.campaign_states).filter((r) => stateSel === "all" || r.state === stateSel) as (Region & { state: string; influencer: string; city?: string; campaign?: string })[];
+            return rows.length ? <div className="overflow-x-auto -mx-5"><table className="w-full"><thead className="bg-slate-50"><tr>{level === "city" && <Th>City</Th>}<Th>State / region</Th><Th>Influencer</Th>{level === "campaign" && <Th>Campaign</Th>}<Th className="text-right">Paid bookings</Th><Th className="text-right">Tickets</Th><Th className="text-right">Revenue</Th></tr></thead>
+              <tbody className="divide-y divide-slate-100">{rows.map((r) => <tr key={[r.city, r.state, r.influencer, r.campaign].join("|")}>{level === "city" && <Td className="font-medium">{r.city}</Td>}<Td>{r.state}</Td><Td className="font-medium">{r.influencer}</Td>{level === "campaign" && <Td className="font-mono text-xs">{r.campaign}</Td>}<Td className="text-right">{num(r.paid_bookings)}</Td><Td className="text-right">{num(r.tickets)}</Td><Td className="text-right font-semibold">{inr(r.revenue)}</Td></tr>)}</tbody></table></div> : <Empty text="No paid influencer bookings in this period." />;
+          })()}
         </Card>
 
         <Card title="Campaigns" action={<span className="text-xs text-slate-400">From the campaign= link parameter</span>}>

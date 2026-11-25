@@ -64,7 +64,12 @@ def make_influencer(client, code="RAHUL01", rate=8, name="Rahul Sharma", platfor
 
 
 def click(client, code="RAHUL01", ip="49.36.10.10", token=None, campaign=None):
-    return client.post("/api/referrals/click", json={"code": code, "session_token": token, "campaign": campaign}, headers={"X-Forwarded-For": ip})
+    return visit(client, ip=ip, token=token, ref=code, campaign=campaign)
+
+
+def visit(client, ip="49.36.10.10", token=None, referrer=None, **params):
+    """A page load as the front-end reports it (src/referral.ts captureVisit)."""
+    return client.post("/api/visits", json={"session_token": token, "referrer": referrer, **params}, headers={"X-Forwarded-For": ip})
 
 
 # A booking as the front-end reports it: 2 adults @1099 (2198) + one add-on 349, 18% GST.
