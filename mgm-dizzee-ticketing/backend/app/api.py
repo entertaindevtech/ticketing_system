@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -14,6 +14,7 @@ from .geo import client_ip
 from .models import BookingAttribution, Influencer, InfluencerCommission
 
 PLATFORMS = ("Instagram", "YouTube", "Facebook", "X", "TikTok", "Blog", "Other")
+BOOKING_REF = r"^[A-Z0-9][A-Z0-9-]{2,39}$"  # e.g. MGM-7TXBFB
 
 
 # ---------- dependencies (overridable in tests) ----------
@@ -29,10 +30,15 @@ def cfg(request: Request):
     return request.app.state.settings
 
 
+PLACEHOLDER_TOKENS = {"change-me-to-a-long-random-string", "changeme", "admin"}
+MIN_TOKEN_LEN = 24
+
+
 def require_admin(request: Request, x_admin_token: str | None = Header(default=None)):
     expected = request.app.state.settings.admin_api_token
-    if not expected:
-        raise HTTPException(503, "Admin API disabled: set ADMIN_API_TOKEN on the server")
+    if not expected or len(expected) < MIN_TOKEN_LEN or expected in PLACEHOLDER_TOKENS:
+        # Fail closed: a missing, short or copied-from-example token never opens the admin API.
+        raise HTTPException(503, f"Admin API disabled: set ADMIN_API_TOKEN to a random secret of at least {MIN_TOKEN_LEN} characters")
     if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
         raise HTTPException(401, "Invalid admin token")
 
@@ -79,12 +85,21 @@ class AmountsIn(BaseModel):
     total: Decimal = Field(ge=0, le=10_000_000)
     visit_date: date | None = None
 
+    @model_validator(mode="after")
+    def _consistent(self):
+        # Mirrors the app's pricing (store.ts priceCart): total = subtotal - discount + tax; add-ons are part of subtotal.
+        if self.discount > self.subtotal or self.addons > self.subtotal:
+            raise ValueError("discount and add-ons cannot exceed the subtotal")
+        if abs(self.subtotal - self.discount + self.tax - self.total) > 1:
+            raise ValueError("total must equal subtotal - discount + tax")
+        return self
+
     def to_amounts(self):
         return services.BookingAmounts(**self.model_dump(include=set(AmountsIn.model_fields)))
 
 
 class PaidIn(AmountsIn):
-    booking_ref: str = Field(min_length=3, max_length=40)
+    booking_ref: str = Field(pattern=BOOKING_REF)
     session_token: str | None = Field(default=None, max_length=64)
     payment_status: str = Field(max_length=16)
     payment_ref: str | None = Field(default=None, max_length=80)
@@ -92,11 +107,11 @@ class PaidIn(AmountsIn):
 
 
 class ModifiedIn(AmountsIn):
-    booking_ref: str = Field(min_length=3, max_length=40)
+    booking_ref: str = Field(pattern=BOOKING_REF)
 
 
 class CancelledIn(BaseModel):
-    booking_ref: str = Field(min_length=3, max_length=40)
+    booking_ref: str = Field(pattern=BOOKING_REF)
     reason: str | None = Field(default=None, max_length=255)
 
 

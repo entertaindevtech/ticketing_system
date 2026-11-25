@@ -7,7 +7,7 @@ from app.config import Settings
 from app.db import Base
 from app.main import create_app
 
-ADMIN = {"X-Admin-Token": "test-admin-token"}
+ADMIN = {"X-Admin-Token": "test-admin-token-0123456789abcdef"}
 
 
 class FakeGeo:
@@ -31,7 +31,7 @@ class FakeGeo:
 def settings(tmp_path):
     # Set TEST_DATABASE_URL (e.g. a throwaway PostgreSQL database) to run the suite on Postgres; tables are dropped after each test.
     url = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.db'}"
-    return Settings(database_url=url, admin_api_token="test-admin-token",
+    return Settings(database_url=url, admin_api_token="test-admin-token-0123456789abcdef",
                     public_app_url="https://book.example.test", frontend_dist=str(tmp_path / "nodist"))
 
 

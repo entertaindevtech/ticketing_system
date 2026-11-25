@@ -222,7 +222,7 @@ def test_modification_after_approval_keeps_amount(client, db):
     pay(client, "MGM-MOD002", click(client).json()["session_token"])
     cid = db.scalar(select(InfluencerCommission.id))
     client.post(f"/api/admin/commissions/{cid}/approve", headers=ADMIN)
-    client.post("/api/booking-events/modified", json={**BOOKING, "booking_ref": "MGM-MOD002", "subtotal": 5000, "total": 5900})
+    client.post("/api/booking-events/modified", json={**BOOKING, "booking_ref": "MGM-MOD002", "subtotal": 5000, "tax": 900, "total": 5900})
     d = client.get(f"/api/admin/commissions/{cid}", headers=ADMIN).json()
     assert d["amount"] == 219.8 and "review manually" in d["events"][-1]["note"]
 
@@ -275,3 +275,28 @@ def test_analytics_aggregation(client):
 
 def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
+
+
+# ---------- hardening (security review) ----------
+def test_weak_or_placeholder_admin_token_keeps_admin_api_closed(app, client):
+    from dataclasses import replace
+    for weak in ("", "short-token", "change-me-to-a-long-random-string"):
+        app.state.settings = replace(app.state.settings, admin_api_token=weak)
+        assert client.get("/api/admin/influencers", headers={"X-Admin-Token": weak}).status_code == 503
+
+
+def test_inconsistent_or_malformed_booking_events_are_rejected(client, db):
+    make_influencer(client)
+    tok = click(client).json()["session_token"]
+    assert pay(client, "MGM-BAD001", tok, total=99999).status_code == 422  # total != subtotal - discount + tax
+    assert pay(client, "MGM-BAD002", tok, discount=999999).status_code == 422
+    assert pay(client, "mgm bad; drop", tok).status_code == 422
+    assert db.scalar(select(func.count()).select_from(BookingAttribution)) == 0
+
+
+def test_one_session_cannot_be_replayed_for_unlimited_bookings(client, db):
+    make_influencer(client)
+    tok = click(client).json()["session_token"]
+    results = [pay(client, f"MGM-CAP{i:03d}", tok).json()["attributed"] for i in range(7)]
+    assert results == [True] * 5 + [False] * 2
+    assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 5

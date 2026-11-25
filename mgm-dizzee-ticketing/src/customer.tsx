@@ -2,13 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   Booking, Cart, Ctx, MAX_DATE, MIN_DATE, MONTHS, Offer, Priced, TODAY, WD, addDays, buildBooking, dateStatus, dow, eligibleOffers,
   emptyCart, fmtDate, nowStamp, fmtShort, inr, offerUnit, parseISO, priceAdj, priceCart, qrPayload, ticketPrice, tierOf, datesBetween,
+  CANCEL_FEE_PCT, cancellationEligibility, cancellationFee, logEvent, requestCancellation,
 } from "./store";
 import mascotUrl from "./assets/mascot.png";
 import { reportPaid } from "./referral";
 import { Reveal } from "./ui";
 import { Badge, Button, Field, Icon, Logo, Modal, OfferArt, QR, Qty, TicketArt, copyText, inputCls, useStore } from "./ui";
 
-type Step = "home" | "date" | "tickets" | "addons" | "details" | "payment" | "done";
+type Step = "home" | "date" | "tickets" | "addons" | "details" | "payment" | "done" | "mybookings";
 const STEPS: { key: Step; label: string }[] = [
   { key: "date", label: "Visit Date" }, { key: "tickets", label: "Select Tickets" }, { key: "addons", label: "Add-ons" },
   { key: "details", label: "Customer Details" }, { key: "payment", label: "Payment" },
@@ -36,7 +37,7 @@ export default function CustomerApp() {
       return { ...c, offers };
     });
   };
-  const ORDER: Step[] = ["home", "date", "tickets", "addons", "details", "payment", "done"];
+  const ORDER: Step[] = ["home", "mybookings", "date", "tickets", "addons", "details", "payment", "done"];
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
   const go = (s: Step) => { setDir(ORDER.indexOf(s) >= ORDER.indexOf(step) ? "fwd" : "back"); setStep(s); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const restart = () => { setCart(emptyCart()); setDate(""); setBooking(null); setCustomer({ name: "", phone: "", email: "", visitors: 0, notes: "" }); go("home"); };
@@ -45,7 +46,8 @@ export default function CustomerApp() {
     <div className="min-h-screen bg-slate-50">
       <SiteHeader onBook={() => go(date ? "tickets" : "date")} onHome={() => go("home")} inFlow={step !== "home"} />
       {step === "home" && <Landing onBook={() => go("date")} />}
-      {step !== "home" && step !== "done" && <Stepper step={step} onJump={(s) => go(s)} canJump={(s) => (s === "date" ? true : !!date && (s === "tickets" || (priced?.ticketCount || 0) > 0))} />}
+      {step === "home" && <div className="fixed bottom-5 right-5 z-50"><Button variant="dark" icon="search" onClick={() => go("mybookings")}>My Bookings</Button></div>}
+      {step !== "home" && step !== "done" && step !== "mybookings" && <Stepper step={step} onJump={(s) => go(s)} canJump={(s) => (s === "date" ? true : !!date && (s === "tickets" || (priced?.ticketCount || 0) > 0))} />}
       <main key={step} className={step === "home" ? "" : `mx-auto max-w-7xl px-4 sm:px-6 pb-32 pt-4 ${dir === "fwd" ? "step-fwd" : "step-back"}`}>
         {step === "date" && <DateStep date={date} onPick={changeDate} onNext={() => go("tickets")} />}
         {step === "tickets" && date && priced && <TicketsStep date={date} setDate={changeDate} cart={cart} setCart={setCart} priced={priced} onBack={() => go("date")} onNext={() => go("addons")} />}
@@ -53,6 +55,7 @@ export default function CustomerApp() {
         {step === "details" && date && priced && <DetailsStep date={date} priced={priced} customer={customer} setCustomer={setCustomer} onBack={() => go("addons")} onNext={() => go("payment")} />}
         {step === "payment" && date && priced && <PaymentStep date={date} priced={priced} cart={cart} customer={customer} onBack={() => go("details")} onPaid={(b) => { setBooking(b); go("done"); }} />}
         {step === "done" && booking && <Confirmation booking={booking} onHome={restart} />}
+        {step === "mybookings" && <MyBookings onHome={() => go("home")} />}
       </main>
       {(step === "home" || step === "done") && <SiteFooter />}
     </div>
@@ -259,7 +262,7 @@ function SiteFooter() {
 }
 
 // ---------------- Date step ----------------
-function DateStep({ date, onPick, onNext }: { date: string; onPick: (d: string) => void; onNext: () => void }) {
+export function DateStep({ date, onPick, onNext }: { date: string; onPick: (d: string) => void; onNext: () => void }) {
   const { db } = useStore(); const ctx = useCtx();
   const [month, setMonth] = useState(date ? parseISO(date).getMonth() : parseISO(TODAY).getMonth());
   const year = 2026;
@@ -363,7 +366,7 @@ function Collapse({ title, icon, count, open, onToggle, children, accent }: { ti
   );
 }
 
-function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNext }: { date: string; setDate: (d: string) => void; cart: Cart; setCart: React.Dispatch<React.SetStateAction<Cart>>; priced: Priced; onBack: () => void; onNext: () => void }) {
+export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNext }: { date: string; setDate: (d: string) => void; cart: Cart; setCart: React.Dispatch<React.SetStateAction<Cart>>; priced: Priced; onBack: () => void; onNext: () => void }) {
   const { db, toast } = useStore(); const ctx = useCtx();
   const [openReg, setOpenReg] = useState(true);
   const [openOff, setOpenOff] = useState(true);
@@ -403,6 +406,7 @@ function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNext }: {
                     <div className="flex items-center gap-2 flex-wrap"><h3 className="font-display text-lg font-bold text-navy-950">{t.name}</h3>{t.kind === "fasttrack" && <Badge tone="red"><Icon name="zap" size={10} />Skip queue</Badge>}</div>
                     <p className="text-sm text-slate-600 mt-0.5 line-clamp-2 sm:line-clamp-none">{t.description}</p>
                     <p className="text-xs text-slate-500 mt-1.5 flex items-center gap-1"><Icon name="info" size={13} />{t.eligibility}</p>
+                    {(t.validityNote || t.restrictions || t.reEntry !== undefined) && <p className="text-xs text-slate-500 mt-1">{[t.validityNote, t.reEntry ? "Same-day re-entry allowed" : t.reEntry === false ? "No re-entry" : "", t.restrictions].filter(Boolean).join(" · ")}</p>}
                   </div>
                   <div className="col-span-2 sm:col-span-1 flex sm:flex-col items-center sm:items-end justify-between gap-2">
                     <div className="sm:text-right"><div className="font-display text-xl font-bold text-navy-950">{inr(p)}</div>{p !== t.basePrice && <div className="text-[11px] text-slate-400">Base {inr(t.basePrice)}</div>}<div className="text-[10px] text-slate-400">+ GST per ticket</div></div>
@@ -551,7 +555,7 @@ function SideSummary({ date, priced, children }: { date: string; priced: Priced;
 }
 
 // ---------------- Add-ons ----------------
-function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { cart: Cart; setCart: React.Dispatch<React.SetStateAction<Cart>>; priced: Priced; date: string; onBack: () => void; onNext: () => void }) {
+export function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { cart: Cart; setCart: React.Dispatch<React.SetStateAction<Cart>>; priced: Priced; date: string; onBack: () => void; onNext: () => void }) {
   const { db } = useStore();
   const setA = (id: string, q: number) => setCart((c) => ({ ...c, addons: { ...c.addons, [id]: q } }));
   const art: Record<string, string> = { food: "from-orange-400 to-mgm-red", locker: "from-slate-500 to-navy-950", swim: "from-sky-400 to-blue-700", vr: "from-violet-500 to-fuchsia-700", camera: "from-amber-300 to-orange-500", cabana: "from-emerald-400 to-teal-700" };
@@ -582,7 +586,7 @@ function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { cart: Car
             );
           })}
         </div>
-        <div className="mt-6 flex justify-between"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="hidden lg:inline-flex">Continue</Button></div>
+        <div className="mt-6 flex justify-between items-center gap-2"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button variant="outline" onClick={onNext}>Skip Add-ons</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="hidden lg:inline-flex">Continue</Button></div>
       </div>
       <SideSummary date={date} priced={priced}><Button size="lg" className="w-full mt-4 hidden lg:flex" onClick={onNext} iconRight="arrow">Continue to Details</Button></SideSummary>
       <MobileBar priced={priced} label="Continue" disabled={false} onNext={onNext} />
@@ -646,12 +650,17 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
   const [upi, setUpi] = useState("");
   const [card, setCard] = useState({ num: "", exp: "", cvv: "", name: customer.name });
   const [bank, setBank] = useState("");
-  const [stage, setStage] = useState<"form" | "processing" | "success">("form");
+  const [stage, setStage] = useState<"form" | "processing" | "success" | "failed">("form");
   const [ref] = useState(() => "MGM-" + Math.random().toString(36).slice(2, 8).toUpperCase().replace(/[01IO]/g, "7"));
   const valid = method === "upi" ? /^[\w.-]{2,}@[a-z]{2,}$/i.test(upi) : method === "card" ? card.num.replace(/\s/g, "").length === 16 && /^\d\d\/\d\d$/.test(card.exp) && card.cvv.length === 3 : !!bank;
-  const pay = () => {
+  const pay = (decline = false) => {
     setStage("processing");
     setTimeout(() => {
+      if (decline) { // demo of a failed payment: no booking, no tickets, nothing reported for commission
+        update((d) => logEvent(d, "payment", `Payment declined for ${ref} (${inr(priced.total)}) — no booking created`, ref, "Customer"));
+        setStage("failed");
+        return;
+      }
       setStage("success");
       setTimeout(() => {
         const b = buildBooking(cart, priced, date, customer, method === "upi" ? "UPI" : method === "card" ? "Card" : "Net Banking", Math.random, nowStamp(), ctx);
@@ -659,6 +668,7 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
         update((d) => {
           d.bookings.unshift(b);
           b.offerIds.forEach((id) => { const o = d.offers.find((x) => x.id === id); if (o) o.redemptions += 1; });
+          logEvent(d, "booking", `New online booking ${b.id} · ${inr(b.totals.total)}`, b.id, "Customer");
         });
         reportPaid(b);
         onPaid(b);
@@ -721,14 +731,17 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
           </div>
           <div className="mt-7 flex flex-col-reverse sm:flex-row gap-3 sm:items-center sm:justify-between">
             <Button variant="ghost" icon="back" onClick={onBack}>Back</Button>
-            <Button size="lg" variant="dark" disabled={!valid} onClick={pay} className="sm:min-w-56" icon="lock">Pay {inr(priced.total)}</Button>
+            <Button size="lg" variant="dark" disabled={!valid} onClick={() => pay()} className="sm:min-w-56" icon="lock">Pay {inr(priced.total)}</Button>
           </div>
-          <p className="mt-4 text-[11px] text-slate-400 flex items-center gap-1.5"><Icon name="shield" size={13} />Payment screen simulated for this prototype. Production will use the Razorpay checkout SDK.</p>
+          <p className="mt-4 text-[11px] text-slate-400 flex items-center gap-1.5"><Icon name="shield" size={13} />Payment screen simulated for this prototype. Production will use the Razorpay checkout SDK.
+            <button type="button" disabled={!valid} onClick={() => pay(true)} className="ml-auto underline hover:text-slate-600 disabled:no-underline disabled:opacity-50">Simulate a declined payment</button></p>
 
           {stage !== "form" && (
             <div className="absolute inset-0 bg-white/95 backdrop-blur grid place-items-center rounded-r-3xl fade-in">
               {stage === "processing" ? (
                 <div className="text-center"><div className="mx-auto h-14 w-14 rounded-full border-4 border-slate-200 border-t-navy-950 animate-spin" /><div className="mt-4 font-bold text-navy-950">Processing payment…</div><div className="text-sm text-slate-500">Please don't close this window</div></div>
+              ) : stage === "failed" ? (
+                <div className="text-center pop-in max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-mgm-red text-white"><Icon name="x" size={34} strokeWidth={3} /></div><div className="mt-4 font-display text-xl font-bold text-navy-950">Payment declined</div><div className="text-sm text-slate-500">No money was taken and no booking was created (simulated).</div><Button className="mt-4" onClick={() => setStage("form")}>Try again</Button></div>
               ) : (
                 <div className="text-center pop-in"><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-500 text-white"><Icon name="check" size={34} strokeWidth={3} /></div><div className="mt-4 font-display text-xl font-bold text-navy-950">Payment successful</div><div className="text-sm text-slate-500">Generating your e-tickets…</div></div>
               )}
@@ -741,7 +754,59 @@ function PaymentStep({ date, priced, cart, customer, onBack, onPaid }: { date: s
 }
 
 // ---------------- Confirmation ----------------
-function Confirmation({ booking, onHome }: { booking: Booking; onHome: () => void }) {
+function CancelPanel({ b }: { b: Booking }) {
+  const { update, toast } = useStore();
+  const [confirming, setConfirming] = useState(false);
+  const elig = cancellationEligibility(b);
+  const fee = cancellationFee(b);
+  const r = b.refund;
+  return (
+    <div className="card p-5 text-sm">
+      <h3 className="font-bold text-navy-950 mb-1">Cancellation & refund</h3>
+      <p className="text-slate-600 text-xs mb-3">Regular tickets can be cancelled up to 48 hours before the visit ({CANCEL_FEE_PCT}% fee). Offer tickets are non-refundable. Partial cancellations are not permitted.</p>
+      {r ? (
+        <div className="rounded-xl border border-slate-200 p-3">
+          <Badge tone={r.status === "pending" ? "amber" : r.status === "rejected" ? "red" : "green"}>{r.status === "pending" ? "Cancellation requested · pending review" : r.status === "rejected" ? "Cancellation rejected" : "Refund processed"}</Badge>
+          <div className="mt-2 text-slate-600">{r.status === "rejected" ? <>Reason: {r.rejectionReason}. Your tickets remain valid.</> : <>{r.status === "pending" ? "Indicative refund" : "Refunded"}: <b>{inr(r.amount)}</b></>}</div>
+        </div>
+      ) : !elig.ok ? <div className="text-slate-500 text-xs">{elig.reason}</div> : confirming ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+          <div className="text-navy-950">A {CANCEL_FEE_PCT}% fee ({inr(fee)}) applies. Indicative refund: <b>{inr(b.totals.total - fee)}</b>. Your tickets stay valid until the park approves the request. This is a simulated request — no money moves automatically.</div>
+          <div className="flex gap-2 mt-3"><Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Back</Button><Button size="sm" variant="danger" onClick={() => { update((d) => { requestCancellation(d, b.id); }); toast("Cancellation requested — pending review"); setConfirming(false); }}>Confirm cancellation request</Button></div>
+        </div>
+      ) : <Button variant="outline" className="w-full" icon="x" onClick={() => setConfirming(true)}>Request cancellation</Button>}
+    </div>
+  );
+}
+
+// Demo lookup by mobile number (no customer login exists in this prototype).
+function MyBookings({ onHome }: { onHome: () => void }) {
+  const { db } = useStore();
+  const [phone, setPhone] = useState(""); const [searched, setSearched] = useState("");
+  const [view, setView] = useState<string | null>(null);
+  const viewing = view && db.bookings.find((b) => b.id === view);
+  if (viewing) return <Confirmation booking={viewing} onHome={() => setView(null)} homeLabel="Back to my bookings" />;
+  const results = searched ? db.bookings.filter((b) => b.customer.phone.replace(/\D/g, "") === searched) : [];
+  const status = (b: Booking) => b.status === "cancelled" ? ["Cancelled", "red"] : b.refund?.status === "pending" ? ["Cancellation requested", "amber"] : b.refund?.status === "rejected" ? ["Cancellation rejected", "slate"] : b.payment.status === "paid" ? [b.visitDate < TODAY ? "Visited / expired" : "Confirmed", "green"] : [b.payment.status, "amber"];
+  return (
+    <div className="max-w-3xl mx-auto fade-in">
+      <h2 className="font-display text-2xl font-bold text-navy-950 mb-1">My Bookings</h2>
+      <p className="text-sm text-slate-500 mb-4">Enter the mobile number used at booking. (Demo lookup — production will verify the number with a one-time code.)</p>
+      <form className="flex gap-2 mb-5" onSubmit={(e) => { e.preventDefault(); setSearched(phone); }}>
+        <input className={inputCls} placeholder="10-digit mobile number" inputMode="numeric" maxLength={10} value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))} aria-label="Mobile number" />
+        <Button type="submit" disabled={phone.length !== 10}>Search</Button><Button type="button" variant="ghost" onClick={onHome}>Back</Button>
+      </form>
+      {searched && results.length === 0 && <div className="text-center text-slate-500 py-10">No bookings found for this number.</div>}
+      <div className="space-y-3">{results.map((b) => { const [label, tone] = status(b); return (
+        <div key={b.id} className="card p-4 flex items-center justify-between gap-3">
+          <div><div className="font-mono font-bold text-navy-950">{b.id}</div><div className="text-xs text-slate-500">{fmtDate(b.visitDate)} · {b.tickets.length} tickets · {inr(b.totals.total)}</div></div>
+          <div className="flex items-center gap-2"><Badge tone={tone}>{label}</Badge><Button size="sm" variant="outline" onClick={() => setView(b.id)}>View</Button></div>
+        </div>); })}</div>
+    </div>
+  );
+}
+
+function Confirmation({ booking, onHome, homeLabel = "Return to homepage" }: { booking: Booking; onHome: () => void; homeLabel?: string }) {
   const { db, toast } = useStore();
   const [view, setView] = useState<number | null>(null);
   const [emailed, setEmailed] = useState(false);
@@ -753,8 +818,13 @@ function Confirmation({ booking, onHome }: { booking: Booking; onHome: () => voi
     <div className="max-w-5xl mx-auto fade-in">
       <div className="relative overflow-hidden rounded-2xl hero-mesh text-white p-6 sm:p-10">
         <div className="relative flex flex-col sm:flex-row sm:items-center gap-5">
-          <div className="grid h-16 w-16 place-items-center rounded-full bg-emerald-500 pop-in"><Icon name="check" size={34} strokeWidth={3} /></div>
-          <div className="flex-1"><div className="text-emerald-300 text-sm font-bold uppercase tracking-widest">Payment successful</div><h1 className="font-display text-3xl sm:text-4xl font-bold">You're all set, {live.customer.name.split(" ")[0]}!</h1><p className="text-white/70 mt-1">Show the QR codes below at the entry gate on {fmtDate(live.visitDate)}.</p></div>
+          {live.status === "cancelled" ? <>
+            <div className="grid h-16 w-16 place-items-center rounded-full bg-mgm-red pop-in"><Icon name="x" size={34} strokeWidth={3} /></div>
+            <div className="flex-1"><div className="text-red-300 text-sm font-bold uppercase tracking-widest">Booking cancelled</div><h1 className="font-display text-3xl sm:text-4xl font-bold">This booking was cancelled</h1><p className="text-white/70 mt-1">Its tickets are no longer valid at the gate.</p></div>
+          </> : <>
+            <div className="grid h-16 w-16 place-items-center rounded-full bg-emerald-500 pop-in"><Icon name="check" size={34} strokeWidth={3} /></div>
+            <div className="flex-1"><div className="text-emerald-300 text-sm font-bold uppercase tracking-widest">Payment successful</div><h1 className="font-display text-3xl sm:text-4xl font-bold">You're all set, {live.customer.name.split(" ")[0]}!</h1><p className="text-white/70 mt-1">Show the QR codes below at the entry gate on {fmtDate(live.visitDate)}.</p></div>
+          </>}
           <div className="rounded-2xl bg-white/10 px-5 py-3 text-center"><div className="text-xs text-white/80">Booking ID</div><div className="font-mono text-xl font-bold text-mgm-yellow">{live.id}</div></div>
         </div>
         <div className="relative mt-7 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -773,7 +843,7 @@ function Confirmation({ booking, onHome }: { booking: Booking; onHome: () => voi
                   <div className="mt-2 font-bold text-navy-950">{t.label}</div>
                   <div className="text-xs text-slate-500">{fmtDate(live.visitDate)}</div>
                   <div className="mt-3 font-mono text-xs font-bold text-navy-900">{t.id}</div>
-                  <div className={`mt-1 text-[11px] font-semibold ${t.status === "used" ? "text-slate-400" : "text-emerald-600"}`}>{t.status === "used" ? "Used at " + t.gate : "Valid · not scanned"}</div>
+                  <div className={`mt-1 text-[11px] font-semibold ${t.status === "valid" ? "text-emerald-600" : t.status === "cancelled" ? "text-red-600" : "text-slate-400"}`}>{t.status === "used" ? "Used at " + t.gate : t.status === "cancelled" ? "Cancelled" : "Valid · not scanned"}</div>
                 </div>
                 <div className="border-l-2 border-dashed border-slate-200 p-3 grid place-items-center bg-slate-50"><QR text={qrPayload(t, live)} size={96} /></div>
               </button>
@@ -785,8 +855,9 @@ function Confirmation({ booking, onHome }: { booking: Booking; onHome: () => voi
             <Button className="w-full" icon="eye" onClick={() => setView(0)}>View tickets</Button>
             <Button className="w-full" variant="outline" icon="download" onClick={() => toast("PDF download is disabled in this preview – production generates a branded PDF", "warn")}>Download PDF</Button>
             <Button className="w-full" variant="outline" icon="mail" disabled={emailed} onClick={() => { setEmailed(true); toast(`Simulated: tickets queued for ${live.customer.email}`); }}>{emailed ? "Email sent (simulated)" : "Email tickets"}</Button>
-            <Button className="w-full" variant="ghost" icon="home" onClick={onHome}>Return to homepage</Button>
+            <Button className="w-full" variant="ghost" icon="home" onClick={onHome}>{homeLabel}</Button>
           </div>
+          <CancelPanel b={live} />
           <div className="card p-5 text-sm">
             <h3 className="font-bold text-navy-950 mb-2">Booking details</h3>
             {Object.entries(counts).map(([k, v]) => <div key={k} className="flex justify-between py-0.5"><span className="text-slate-600">{k}</span><span className="font-semibold">× {v}</span></div>)}

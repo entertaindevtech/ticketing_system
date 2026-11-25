@@ -10,7 +10,7 @@ This adds influencer management, referral attribution, approximate regional (IP-
 
 ## 1. Architecture and decisions
 
-**What was there.** The repository had no backend. `src/` is a React 19 + Vite + Tailwind v4 app (customer booking, admin console, staff scanner) whose entire database is a JSON object in `localStorage` (`src/ui.tsx`, key `mgm-dizzee-proto-v3`). The payment is simulated in `PaymentStep` (`src/customer.tsx`) and always succeeds. Cancellation is the admin "Cancel & refund" button (`src/admin.tsx`). `static-build/index.html` is a separately hand-patched single-file build. It has eight extra features that are **not** in `src/`, and this work does not touch it.
+**What was there.** The repository had no backend. `src/` is a React 19 + Vite + Tailwind v4 app (customer booking, admin console, staff scanner) whose entire database is a JSON object in `localStorage` (`src/ui.tsx`, key `mgm-dizzee-proto-v3`). The payment is simulated in `PaymentStep` (`src/customer.tsx`) and always succeeds. Cancellation is the admin "Cancel & refund" button (`src/admin.tsx`). *(Update 25 Nov: the features that previously existed only in the hand-patched `static-build/index.html` have been migrated into `src/`, and that file is now generated from `src/`. See [MGM-Ticketing-Prototype-Handover.md](MGM-Ticketing-Prototype-Handover.md).)*
 
 **What was added.** A modular-monolith backend (Python, FastAPI, SQLAlchemy 2, Alembic, PostgreSQL) in `backend/`. A single Railway service serves both the API (`/api/*`) and the built React app, so the browser talks to the same origin and production needs no CORS.
 
@@ -19,8 +19,13 @@ This adds influencer management, referral attribution, approximate regional (IP-
 | Event | Where it fires | Endpoint |
 |---|---|---|
 | Payment confirmed | `PaymentStep` success, right after the booking is saved | `POST /api/booking-events/paid` |
-| Cancelled / refunded | Admin › Bookings › "Cancel & refund" | `POST /api/booking-events/cancelled` |
-| Modified | Backend endpoint only. `src/` has no booking-modification feature yet (it exists only in `static-build`), so nothing calls it today. | `POST /api/booking-events/modified` |
+| Cancelled / refunded | Admin › Bookings › "Cancel & refund", and Admin › Payments › approve a customer's refund request | `POST /api/booking-events/cancelled` |
+| Modified | Admin › Bookings › "Modify booking" | `POST /api/booking-events/modified` |
+
+These are **not** reported:
+- declined payments, because no booking is created;
+- customer cancellation *requests* and rejected requests, because the booking stays valid;
+- counter sales, which are never referral-attributed.
 
 Events go through a small `localStorage` outbox (`src/referral.ts`). It retries after network errors and 5xx responses, so a brief API outage does not lose a sale. If the API is down, booking still works exactly as before.
 
@@ -53,7 +58,9 @@ backend/requirements.txt, backend/.env.example
 src/referral.ts                                   ?ref capture, session token, event outbox
 src/influencers.tsx                               Admin › Influencers & Regions UI
 ```
-**Changed (minimal, additive):**
+*(The consolidation commit also added `src/counter.tsx`, `tests/store.test.ts` and `scripts/build-static.mjs`, and migrated the static-only features into `store.ts`, `admin.tsx` and `customer.tsx`. See [MGM-Ticketing-Prototype-Handover.md](MGM-Ticketing-Prototype-Handover.md) §1–3.)*
+
+**Changed in the first influencer commit (minimal, additive):**
 - `src/main.tsx`: one line that calls `captureReferral()` on load.
 - `src/customer.tsx`: one `reportPaid(b)` call after a successful payment.
 - `src/admin.tsx`:
@@ -168,7 +175,13 @@ The OpenAPI docs are at `/docs` and `/openapi.json`.
 | `POST /api/admin/commissions/{id}/approve`, `/mark-paid` | `X-Admin-Token` | settlement workflow |
 | `GET /api/admin/analytics?from&to&influencer_id` | `X-Admin-Token` | everything on the dashboard |
 
-**Admin authentication.** The app has no user login anywhere, so admin endpoints require a shared token (`ADMIN_API_TOKEN`). It is compared in constant time. An admin pastes it once into Admin › Influencers & Regions, where it is kept in `sessionStorage` for that tab only and never put in the JS bundle. If the token is unset, the admin API returns 503, so it is never accidentally open.
+**Admin authentication.** The app has no user login anywhere, so admin endpoints require a shared token (`ADMIN_API_TOKEN`). It is compared in constant time. An admin pastes it once into Admin › Influencers & Regions, where it is kept in `sessionStorage` for that tab only and never put in the JS bundle. The admin API fails closed: it returns 503 if the token is unset, shorter than 24 characters, or a known placeholder such as the `.env.example` value. A deployment can therefore never run with a guessable token.
+
+**Integrity checks on booking events** (added in the security review):
+- Amounts must be internally consistent: total = subtotal − discount + tax (±₹1), and discount and add-ons cannot exceed the subtotal.
+- `booking_ref` must match `^[A-Z0-9][A-Z0-9-]{2,39}$`.
+- One referral session can attribute at most `MAX_BOOKINGS_PER_SESSION` bookings (default 5), which limits how far a leaked or replayed token can be abused.
+- Rejected events return 422. The front-end outbox drops 4xx responses and retries only network errors and 5xx.
 
 ## 9. Environment variables
 
@@ -185,6 +198,7 @@ See `backend/.env.example`.
 | `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `first_click` / `30` |
 | `COMMISSION_BASIS` | – | `ticket_net_ex_gst` (default) or `total_ex_gst` |
 | `BOOKING_EVENTS_TOKEN` | – | set only once events come from a server (§12) |
+| `MAX_BOOKINGS_PER_SESSION` | – | default `5`; bookings beyond this per referral session are not attributed |
 | `CORS_ORIGINS` | – | only if the front-end is served from another origin |
 | `VITE_API_URL` | – | front-end build-time; leave empty for same-origin (default) |
 
@@ -210,7 +224,20 @@ The repository root is the outer folder, so the service's **Root Directory** mus
 
 ## 11. Testing performed
 
-**Automated: 31 tests, all passing** (`cd backend && pytest`). They cover:
+*Latest run (25 Nov, after source consolidation):*
+- **backend: 34 passed** (`cd backend && pytest`, SQLite);
+- **front-end business rules: 10 passed** (`npm test`);
+- `tsc --noEmit` clean;
+- `npm run build` and `npm run build:static` succeed.
+
+The extra backend tests cover:
+- a weak or placeholder admin token being refused;
+- inconsistent or malformed booking events being rejected;
+- the per-session attribution cap.
+
+The full browser regression run for the consolidated app is in §11a.
+
+**Original automated suite:** it covers:
 - referral code validation and inactive influencers;
 - click recording; first-click retention; expiry after 30 days; one GeoIP lookup per session;
 - Unknown, partial and Outside-India buckets; spoofed `X-Forwarded-For`; private IPs; missing or corrupt MMDB;
@@ -240,9 +267,63 @@ The repository root is the outer folder, so the service's **Root Directory** mus
 - Railway deployment and the real `X-Forwarded-For` layout behind Railway's edge.
 - A real GeoLite2 download and lookup. No MaxMind credentials were available, so the lookup was tested with a fake reader.
 - Mobile layout of the new screens.
-- The Staff Scanner was not re-tested; it was not modified.
 
-**Local Windows note:** this machine's Application Control policy blocks SQLAlchemy's compiled extension and the `uvicorn.exe` launcher. Set `DISABLE_SQLALCHEMY_CEXT_RUNTIME=1` and use `python -m uvicorn`. Linux/Railway is unaffected.
+**Local Windows note:** this machine's Application Control policy blocks SQLAlchemy's compiled extension and the `uvicorn.exe` / `alembic.exe` launchers. Set `DISABLE_SQLALCHEMY_CEXT_RUNTIME=1` and use `python -m uvicorn` / `python -m alembic`. Linux/Railway is unaffected.
+
+### 11a. Browser regression run after consolidation (25 Nov)
+
+Setup:
+- Built-in browser.
+- Backend serving the freshly built `src/` on SQLite at `localhost:8765`.
+- Browser storage cleared first.
+- The influencer `REG01` (10%) was created through the admin API. Influencer creation through the UI was covered in the earlier run.
+
+Verified in the UI, with server state checked after each step:
+
+1. **Referral capture.** `/?ref=REG01&campaign=xmas` stored the session token and removed the parameters from the URL.
+2. **Customer booking.** 30 Nov, 2 General Adult, **Skip Add-ons** went straight to Customer Details.
+3. **Payment failure.** "Simulate a declined payment":
+   - the booking count stayed at 212 → 212;
+   - nothing was queued for the backend;
+   - an Activity Log entry was written.
+4. **Payment success** (booking `MGM-ZR8XAG`, ₹2,594):
+   - commission ₹2,198 × 10% = **₹219.80 pending**, campaign `xmas`;
+   - a "New online booking" notification.
+5. **Customer history and cancellation.**
+   - My Bookings lookup by mobile found the booking; View → Request cancellation → Confirm.
+   - Refund pending: fee ₹259, refund ₹2,335.
+   - The booking and its tickets stayed valid.
+6. **Refund approval** (Admin › Payments › Pending refund requests › Approve):
+   - the booking was cancelled, payment refunded, and both tickets cancelled;
+   - the commission was **reversed**;
+   - analytics showed 0 paid bookings and ₹0 revenue, with 1 attributed booking kept.
+7. **Modification** (second referral booking `MGM-TMVAQN`, Admin › Bookings › Modify, 1 → 2 adults):
+   - the total went ₹1,427 → ₹2,853, with "collect ₹1,426" shown;
+   - the **original ticket ID was kept** and one ticket added;
+   - the **same single commission** was re-priced ₹120.90 → ₹241.80 at the frozen 10%, with the change in its history.
+8. **Counter sale** for today (Cash, `MGM-AXTG4E`):
+   - the booking was created with a notification;
+   - **not attributed**, even though the browser still held the referral session.
+9. **Gate (Staff Scanner, manual entry):**
+   - counter-sale ticket → VALID; same ticket again → **already used**;
+   - a ticket from the refunded booking → **INVALID · Ticket cancelled**.
+10. **Dashboard capacity row:** admitted 7 + remaining 6 = expected 13; capacity 4,000.
+11. **Notifications** listed all 7 events with an unread badge. The **Activity Log** merged admin, customer and counter actions with the gate scans.
+12. **Ticket entitlements.** Re-entry and "Photo ID required at entry" were saved in Ticket Management, persisted, and shown on the customer ticket card.
+13. **Regenerated `static-build/index.html`**, served on its own with no backend:
+    - customer and admin screens rendered with every migrated module;
+    - one inline script; the only external resource is Google Fonts, as before;
+    - no console errors.
+
+**Test-harness notes:**
+- Approve uses a native `confirm()` dialog that the browser tool cannot click, so `window.confirm` was stubbed to accept for that step.
+- One console error (HTTP 500) came from the first setup call, before the local migration had run. There were none after that.
+
+**Not covered in this run:**
+- rejecting a refund in the UI (it is covered by unit tests);
+- the influencer dashboard visuals (unchanged since the earlier run);
+- mobile layouts;
+- PostgreSQL, Docker, Railway, and real GeoLite data.
 
 ## 12. Known limitations and next steps
 
@@ -251,8 +332,8 @@ The repository root is the outer folder, so the service's **Root Directory** mus
    - Have the Razorpay webhook (with its signature verified) call `confirm_payment`, and the booking backend call cancel/modify.
    - Then set `BOOKING_EVENTS_TOKEN` so the browser can no longer call these endpoints.
 2. **Admin bookings live in each browser's `localStorage`.** The prototype's admin and customer screens only share data within one browser. Cancellations made from another device still reach the server (the event carries the booking reference), but the influencer dashboard is the only cross-device view.
-3. **Booking modification is not wired up in `src/`** because the feature does not exist there yet. When it is added, call `reportModified(b)` from `src/referral.ts`.
-4. **`static-build/index.html` was not changed.** It does not contain this module, and `src/` does not contain its eight hand-patched features. The two front-ends have diverged; pick one source of truth.
+3. **Cross-device event order is not guaranteed.** If an admin cancels a booking on one device before the customer's own browser has delivered its "paid" event (for example, the customer went offline right after paying), the late "paid" event will still attribute the cancelled booking. This cannot happen once events come from the server (item 1).
+4. **A pending customer cancellation request leaves the commission pending.** Admins should not approve that commission until the request is resolved; the UI does not block it.
 5. **No partial refunds.** Any cancellation reverses the whole commission. The existing "Cancel & refund" keeps 10%, but the commission is reversed in full. Confirm this policy with MGM.
 6. **Paid commission reversal does not claw money back automatically.** It is flagged in the history for finance to recover.
 7. **IP location is approximate** (§5). VPN, corporate and mobile carrier IPs skew results.
@@ -262,7 +343,17 @@ The repository root is the outer folder, so the service's **Root Directory** mus
    - The booking reference links this to the booking, which itself holds the customer's contact details in the existing system.
    - Purpose: influencer attribution and commission only.
    - Before launch, add a line to the privacy notice ("we estimate your approximate region from your IP address to measure marketing performance") and set a retention period for `referral_clicks` and `referral_sessions`, for example 13 months.
-9. **Future work:**
+9. **Required before a real payment gateway (Razorpay).** None of these are done; the current flow is a prototype.
+   1. **Persist bookings on the server.** Add a `bookings` table with ticket rows. The browser stops being the system of record, and the booking reference is created server-side.
+   2. **Create the order on the server, not in the browser.** The server creates the Razorpay order (amount computed server-side from the cart, never trusted from the client) and stores `order_id ↔ booking_ref ↔ referral session token`. The referral token is attached at order creation, so the browser can never choose it at payment time.
+   3. **Make the signed webhook the only "paid" trigger.**
+      - Verify `X-Razorpay-Signature` (HMAC-SHA256 with the webhook secret) on `payment.captured` / `order.paid`, then call `services.confirm_payment`.
+      - Its idempotency by `booking_ref` already absorbs webhook retries. Also store the Razorpay `payment_id` with a unique constraint.
+   4. **Drive refunds from the gateway.** Call `services.cancel_booking` on the Razorpay refund API result, or on `refund.processed` webhooks. Handle partial refunds explicitly; the commission policy for them is not yet defined.
+   5. **Close the browser endpoints.** Set `BOOKING_EVENTS_TOKEN`, or remove the public `/api/booking-events/*` routes. Then delete `reportPaid` / `reportCancelled` / `reportModified` from the front-end.
+   6. **Add real admin and staff authentication** (SSO or per-user accounts with roles) to replace the shared `ADMIN_API_TOKEN` and the demo staff passwords.
+   7. **Reconcile daily** against Razorpay settlement reports before approving commissions.
+10. **Future work:**
    - a Postgres CI job;
    - CSV export of commissions;
    - bulk approve;

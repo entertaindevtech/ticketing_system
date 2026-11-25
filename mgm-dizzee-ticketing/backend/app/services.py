@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -119,6 +119,10 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
         return None
     session = db.scalar(select(ReferralSession).where(ReferralSession.token == session_token))
     if not session:
+        return None
+    # A real visitor rarely makes more than a few bookings; cap how far one (possibly leaked) token can be replayed.
+    used = db.scalar(select(func.count()).select_from(BookingAttribution).where(BookingAttribution.session_id == session.id))
+    if used >= cfg.max_bookings_per_session:
         return None
     now = utcnow()
     # A delayed (retried) event may report the real payment time; never trust it beyond [session start, now].

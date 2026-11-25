@@ -2,6 +2,8 @@
 export type TicketCat = {
   id: string; name: string; kind: "general" | "fasttrack"; audience: "adult" | "child";
   basePrice: number; description: string; eligibility: string; active: boolean; dailyLimit: number;
+  // entitlements (optional so data saved before these existed still loads)
+  validityNote?: string; reEntry?: boolean; restrictions?: string;
 };
 export type OfferType = "bxgy" | "percent" | "flat" | "package";
 export type OfferStatus = "draft" | "scheduled" | "active" | "paused" | "expired";
@@ -24,14 +26,24 @@ export type Booking = {
   offerIds: string[]; coupon: string;
   totals: { subtotal: number; discount: number; addons: number; tax: number; total: number; complimentary: number };
   payment: { txnId: string; method: string; status: PayStatus; gateway: string; at: string };
-  status: "confirmed" | "cancelled"; tickets: Ticket[]; live?: boolean; refund?: { amount: number; at: string; reason: string };
+  status: "confirmed" | "cancelled"; tickets: Ticket[]; live?: boolean; refund?: Refund;
+  counterSale?: boolean; modifiedAt?: string; modifications?: Modification[];
 };
+// status absent = legacy instant admin refund (always completed).
+export type Refund = {
+  amount: number; at: string; reason: string; status?: "pending" | "approved" | "rejected"; deduction?: number;
+  requestedAt?: string; approvedAt?: string; rejectedAt?: string; rejectionReason?: string;
+};
+export type Modification = { at: string; by: string; previousVisitDate: string; visitDate: string; previousTotal: number; newTotal: number };
+export type Notice = { id: string; type: string; message: string; ref: string; at: string; read: boolean };
+export type AuditEntry = { id: string; type: string; message: string; ref: string; at: string; actor: string };
 export type Scan = { id: string; at: string; ticketId: string; bookingId: string; gate: string; staffId: string; result: "valid" | "duplicate" | "invalid"; reason: string };
 export type Staff = { id: string; name: string; password: string; gate: string; role: string; active: boolean; phone: string };
 export type Settings = { gst: number; openTime: string; closeTime: string; parkName: string; phone: string; email: string; defaultCapacity: number };
 export type DB = {
   tickets: TicketCat[]; offers: Offer[]; addons: Addon[]; dateCfg: Record<string, DateCfg>;
   bookings: Booking[]; scans: Scan[]; staff: Staff[]; settings: Settings; version: number;
+  notifications?: Notice[]; auditLog?: AuditEntry[];
 };
 
 // ---------- dates ----------
@@ -63,7 +75,8 @@ export const qrPayload = (t: Ticket, b: Booking) => { const base = `MGMDW1|${t.i
 
 // ---------- seed ----------
 const T = (id: string, name: string, kind: TicketCat["kind"], audience: TicketCat["audience"], basePrice: number, description: string, eligibility: string): TicketCat =>
-  ({ id, name, kind, audience, basePrice, description, eligibility, active: true, dailyLimit: kind === "fasttrack" ? 400 : 3000 });
+  ({ id, name, kind, audience, basePrice, description, eligibility, active: true, dailyLimit: kind === "fasttrack" ? 400 : 3000,
+    validityNote: "Valid on the selected visit date only", reEntry: false, restrictions: "" });
 
 export const seedTickets = (): TicketCat[] => [
   T("ga", "General Adult", "general", "adult", 1099, "Full-day access to all dry & water rides, wave pool and live shows.", "Visitors above 140 cm height"),
@@ -396,4 +409,111 @@ export function evaluateScan(raw: string, db: DB): ScanResult {
   if (booking.visitDate < TODAY) return { ...base, kind: "invalid", title: "INVALID TICKET", reason: `Ticket expired – visit date was ${fmtShort(booking.visitDate)}` };
   if (booking.visitDate > TODAY) return { ...base, kind: "invalid", title: "INVALID TICKET", reason: `Wrong visit date – valid on ${fmtDate(booking.visitDate)}` };
   return { ...base, kind: "valid", title: "VALID TICKET", reason: "Entry approved" };
+}
+
+// ---------- notifications & activity log ----------
+// Demonstration records kept in the same store; not an immutable security audit trail.
+export function logEvent(d: DB, type: string, message: string, ref: string, actor: string, at = nowStamp()) {
+  const id = () => rid(6);
+  (d.notifications ||= []).unshift({ id: "NTF-" + id(), type, message, ref, at, read: false });
+  (d.auditLog ||= []).unshift({ id: "AUD-" + id(), type, message, ref, at, actor });
+  if (d.notifications.length > 500) d.notifications.length = 500; // keep localStorage bounded
+  if (d.auditLog.length > 2000) d.auditLog.length = 2000;
+}
+
+// ---------- cancellation & refunds ----------
+export const CANCEL_FEE_PCT = 10;
+export const CANCEL_NOTICE_DAYS = 2; // "up to 48 hours before the visit"
+export const isRefunded = (b: Booking) => !!b.refund && (!b.refund.status || b.refund.status === "approved");
+
+export function cancellationEligibility(b: Booking, today = TODAY): { ok: boolean; reason: string } {
+  if (b.status === "cancelled") return { ok: false, reason: "This booking is already cancelled." };
+  if (b.refund?.status === "pending") return { ok: false, reason: "A cancellation request is already pending review." };
+  if (b.refund) return { ok: false, reason: "This booking's cancellation has already been reviewed." };
+  if (b.payment.status !== "paid") return { ok: false, reason: "Only paid bookings can be cancelled." };
+  if (b.offerIds.length) return { ok: false, reason: "This booking used an offer and is not eligible for cancellation." };
+  if (b.tickets.some((t) => t.status === "used")) return { ok: false, reason: "Tickets from this booking have already been used." };
+  if (b.visitDate < addDays(today, CANCEL_NOTICE_DAYS)) return { ok: false, reason: "Less than 48 hours remain before the visit — not eligible for cancellation." };
+  return { ok: true, reason: "" };
+}
+export const cancellationFee = (b: Booking) => Math.round((b.totals.total * CANCEL_FEE_PCT) / 100);
+
+/** Customer request; the booking stays valid until an admin approves it. */
+export function requestCancellation(d: DB, id: string, at = nowStamp()): boolean {
+  const b = d.bookings.find((x) => x.id === id);
+  if (!b || !cancellationEligibility(b).ok) return false;
+  const deduction = cancellationFee(b);
+  b.refund = { amount: b.totals.total - deduction, deduction, status: "pending", requestedAt: at, at, reason: "Customer requested cancellation" };
+  logEvent(d, "cancellation", `Cancellation requested for ${id}`, id, "Customer", at);
+  return true;
+}
+
+function cancelTickets(b: Booking) { b.status = "cancelled"; b.payment.status = "refunded"; b.tickets.forEach((t) => { if (t.status !== "used") t.status = "cancelled"; }); }
+
+export function approveRefund(d: DB, id: string, at = nowStamp()): boolean {
+  const b = d.bookings.find((x) => x.id === id);
+  if (!b || b.refund?.status !== "pending" || b.status === "cancelled") return false;
+  cancelTickets(b);
+  Object.assign(b.refund, { status: "approved", approvedAt: at, at });
+  logEvent(d, "refund", `Refund of ${inr(b.refund.amount)} approved for ${id}`, id, "Admin", at);
+  return true;
+}
+
+export function rejectRefund(d: DB, id: string, reason: string, at = nowStamp()): boolean {
+  const b = d.bookings.find((x) => x.id === id);
+  if (!b || b.refund?.status !== "pending") return false;
+  Object.assign(b.refund, { status: "rejected", rejectedAt: at, rejectionReason: reason.trim() || "Not eligible per policy" });
+  logEvent(d, "refund", `Refund rejected for ${id}`, id, "Admin", at);
+  return true;
+}
+
+/** The pre-existing one-step admin "Cancel & refund" (keeps the 10% fee). */
+export function adminCancel(d: DB, id: string, at = nowStamp()): boolean {
+  const b = d.bookings.find((x) => x.id === id);
+  if (!b || b.status === "cancelled" || b.payment.status !== "paid") return false;
+  cancelTickets(b);
+  b.refund = { amount: b.totals.total - cancellationFee(b), deduction: cancellationFee(b), status: "approved", approvedAt: at, at, reason: `Cancelled by admin (${CANCEL_FEE_PCT}% fee)` };
+  logEvent(d, "refund", `Booking ${id} cancelled and refunded by admin`, id, "Admin", at);
+  return true;
+}
+
+// ---------- booking modification ----------
+export function modificationEligibility(b: Booking, d: Pick<DB, "dateCfg">): { ok: boolean; reason: string } {
+  if (b.status === "cancelled") return { ok: false, reason: "Cancelled bookings can't be modified." };
+  if (b.payment.status !== "paid") return { ok: false, reason: "Only paid bookings can be modified." };
+  if (b.refund?.status === "pending") return { ok: false, reason: "Resolve the pending cancellation request first." };
+  if (b.offerIds.length || b.coupon) return { ok: false, reason: "Bookings with offers or coupons can't be modified — offer pricing is tied to the original date." };
+  if (b.tickets.some((t) => t.status === "used")) return { ok: false, reason: "Tickets have already been used at the gate." };
+  if (b.visitDate < TODAY) return { ok: false, reason: "The visit date has passed." };
+  return { ok: true, reason: "" };
+}
+
+/** Re-prices a regular booking. Existing ticket IDs (and their QR codes) are kept wherever the category still has tickets. */
+export function modifyBooking(d: DB, id: string, visitDate: string, ticketQty: Record<string, number>, addonQty: Record<string, number>, at = nowStamp()): { ok: boolean; error: string } {
+  const b = d.bookings.find((x) => x.id === id);
+  if (!b) return { ok: false, error: "Booking not found." };
+  const elig = modificationEligibility(b, d);
+  if (!elig.ok) return { ok: false, error: elig.reason };
+  const ds = dateStatus(visitDate, d);
+  if (!ds.open) return { ok: false, error: `${fmtShort(visitDate)} is not available: ${ds.reason}.` };
+  const ctx: Ctx = { tickets: d.tickets, offers: d.offers, dateCfg: d.dateCfg, settings: d.settings };
+  const pr = priceCart({ tickets: ticketQty, offers: {}, addons: addonQty, coupon: "" }, visitDate, ctx, TODAY, d.addons);
+  if (pr.ticketCount === 0) return { ok: false, error: "A booking needs at least one ticket." };
+
+  const keep: Ticket[] = [];
+  for (const l of pr.lines) if (l.kind === "ticket") {
+    const existing = b.tickets.filter((t) => t.catId === l.refId && t.status === "valid");
+    for (let i = 0; i < l.qty; i++) keep.push(existing[i] || { id: "TKT-" + rid(8), catId: l.refId, label: l.label, status: "valid" });
+  }
+  const previousTotal = b.totals.total, previousVisitDate = b.visitDate;
+  b.tickets = keep;
+  b.visitDate = visitDate;
+  b.customer.visitors = pr.ticketCount;
+  b.items = pr.lines.map((l) => ({ label: l.label, qty: l.qty, amount: l.amount, kind: l.kind, refId: l.refId }));
+  b.totals = { subtotal: pr.subtotal, discount: pr.offerSavings + pr.couponDiscount, addons: pr.addonsTotal, tax: pr.tax, total: pr.total, complimentary: pr.complimentary };
+  b.modifiedAt = at;
+  (b.modifications ||= []).push({ at, by: "Admin", previousVisitDate, visitDate, previousTotal, newTotal: pr.total });
+  const diff = pr.total - previousTotal;
+  logEvent(d, "modification", `Booking ${id} modified (${diff === 0 ? "no price change" : diff > 0 ? `collect ${inr(diff)}` : `refund ${inr(-diff)}`})`, id, "Admin", at);
+  return { ok: true, error: "" };
 }

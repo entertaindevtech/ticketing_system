@@ -1,24 +1,28 @@
 import React, { useMemo, useState } from "react";
 import {
   Booking, DB, MONTHS, Offer, OfferStatus, OfferType, Staff, TODAY, TicketCat, WD, addDays, dateStatus, datesBetween, effectiveStatus, eligibleOffers,
-  fmtDate, fmtShort, fmtTime, inr, offerUnit, parseISO, priceAdj, qrPayload, ticketPrice, tierOf, MIN_DATE, MAX_DATE, rid, nowStamp,
+  fmtDate, fmtShort, fmtTime, inr, offerUnit, parseISO, priceAdj, qrPayload, ticketPrice, tierOf, MIN_DATE, MAX_DATE, rid,
+  adminCancel, approveRefund, rejectRefund, isRefunded, logEvent, modifyBooking, modificationEligibility, priceCart,
 } from "./store";
 import { CountUp, DateInput, Select, TimeInput } from "./ui";
 import { Badge, Button, Field, Icon, Logo, Modal, OfferArt, QR, THEMES, Toggle, copyText, inputCls, useStore } from "./ui";
 import { BarChart, Donut, Funnel, HBars, LineChart, PALETTE } from "./charts";
 import { useCtx, validityText } from "./customer";
-import { reportCancelled } from "./referral";
+import { reportCancelled, reportModified } from "./referral";
 import InfluencerModule from "./influencers";
+import CounterSale from "./counter";
 
 const MODULES = [
   ["dashboard", "Dashboard", "grid"], ["calendar", "Calendar Management", "calendar"], ["tickets", "Ticket Management", "ticket"],
   ["offers", "Offer Management", "tag"], ["bookings", "Booking Management", "file"], ["payments", "Payment Management", "card"],
   ["customers", "Customer Management", "users"], ["entry", "QR / Entry Management", "qr"], ["reports", "Reports & Analytics", "chart"],
-  ["staff", "Staff Management", "user"], ["settings", "Settings", "settings"], ["influencers", "Influencers & Regions", "trend"],
+  ["staff", "Staff Management", "user"], ["counter", "Counter Sale", "zap"], ["notifications", "Notifications", "mail"], ["audit", "Activity Log", "clock"],
+  ["settings", "Settings", "settings"], ["influencers", "Influencers & Regions", "trend"],
 ] as const;
 type Mod = (typeof MODULES)[number][0];
 
 export default function AdminApp() {
+  const { db } = useStore();
   const [mod, setMod] = useState<Mod>("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
@@ -30,8 +34,11 @@ export default function AdminApp() {
     customers: "Customer profiles and booking history", entry: "Gate scans, entry status and rejected tickets",
     reports: "Revenue, sales mix and offer performance", staff: "Gate staff accounts and assignments", settings: "Park details and booking rules",
     influencers: "Influencer referrals, commissions and approximate regional sales",
+    counter: "Walk-in ticket sales at the park counter (simulated payment)", notifications: "Booking, cancellation, refund and change events",
+    audit: "Who did what, and when — admin actions and gate scans",
   };
-  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Marketing", ["influencers"]], ["Operations", ["entry", "staff"]], ["System", ["settings"]]];
+  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Counter Sale", ["counter"]], ["Marketing", ["influencers"]], ["Operations", ["entry", "staff"]], ["Oversight", ["notifications", "audit"]], ["System", ["settings"]]];
+  const unread = (db.notifications || []).filter((n) => !n.read).length;
   return (
     <div className="min-h-screen bg-[#F4F3EF] flex">
       {mobileNav && <div className="fixed inset-0 z-40 bg-navy-950/50 lg:hidden" onClick={() => setMobileNav(false)} />}
@@ -45,6 +52,7 @@ export default function AdminApp() {
                 <button key={k} onClick={() => { setMod(k); setMobileNav(false); }} title={l} className={`relative w-full flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition ${mod === k ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"} ${collapsed ? "lg:justify-center" : ""}`}>
                   {mod === k && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-mgm-yellow pop-in" />}
                   <Icon name={i} size={18} className={mod === k ? "text-mgm-yellow" : ""} /><span className={collapsed ? "lg:hidden" : ""}>{l}</span>
+                  {k === "notifications" && unread > 0 && <span className={`ml-auto rounded-full bg-mgm-red px-1.5 text-[10px] font-bold text-white ${collapsed ? "lg:hidden" : ""}`}>{unread}</span>}
                 </button>
               ))}
             </div>
@@ -73,6 +81,9 @@ export default function AdminApp() {
           {mod === "staff" && <StaffMgmt />}
           {mod === "settings" && <SettingsPage />}
           {mod === "influencers" && <InfluencerModule />}
+          {mod === "counter" && <CounterSale />}
+          {mod === "notifications" && <NotificationsPage />}
+          {mod === "audit" && <ActivityLog />}
         </main>
       </div>
     </div>
@@ -135,6 +146,7 @@ function Dashboard({ go }: { go: (m: Mod) => void }) {
         <Kpi label="Active offers" value={String(s.activeOffers)} icon="tag" tone="red" sub={`${db.offers.length} offers configured`} />
         <Kpi label="Pending payments" value={String(s.pending)} icon="clock" tone="amber" sub="Awaiting confirmation" />
       </div>
+      <TodayCapacity />
       <div className="grid xl:grid-cols-2 gap-5">
         <Card title="Daily booking trend" action={<span className="text-xs text-slate-400">Last 30 days</span>}>
           <LineChart labels={s.days.map(fmtShort)} series={[{ name: "Bookings", color: "#111111", values: s.byDay.map((x) => x.length) }, { name: "Tickets", color: "#CE3B37", values: s.byDay.map((x) => x.reduce((a, b) => a + b.tickets.length, 0)) }]} />
@@ -156,6 +168,23 @@ function Dashboard({ go }: { go: (m: Mod) => void }) {
         <div className="overflow-x-auto -mx-5"><table className="w-full"><thead className="bg-slate-50"><tr><Th>Booking</Th><Th>Customer</Th><Th>Visit</Th><Th>Tickets</Th><Th>Amount</Th><Th>Payment</Th></tr></thead>
           <tbody className="divide-y divide-slate-100">{db.bookings.slice(0, 6).map((b) => <tr key={b.id}><Td className="font-mono font-semibold">{b.id}</Td><Td>{b.customer.name}</Td><Td>{fmtShort(b.visitDate)}</Td><Td>{b.tickets.length}</Td><Td className="font-semibold">{inr(b.totals.total)}</Td><Td><Badge tone={payTone(b.payment.status)}>{b.payment.status}</Badge></Td></tr>)}</tbody></table></div>
       </Card>
+    </div>
+  );
+}
+
+// Today's park operations. All four figures come from the same set of tickets, so admitted + remaining = expected.
+function TodayCapacity() {
+  const { db } = useStore();
+  const today = db.bookings.filter((b) => b.visitDate === TODAY && b.payment.status === "paid" && b.status !== "cancelled").flatMap((b) => b.tickets.filter((t) => t.status !== "cancelled"));
+  const admitted = today.filter((t) => t.status === "used").length;
+  const capacity = db.dateCfg[TODAY]?.capacity ?? db.settings.defaultCapacity;
+  const pct = capacity ? Math.round((today.length / capacity) * 100) : 0;
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger">
+      <Kpi label="Admitted today" value={admitted.toLocaleString("en-IN")} icon="checkCircle" tone="green" sub="Tickets scanned in at the gate" />
+      <Kpi label="Expected today" value={today.length.toLocaleString("en-IN")} icon="users" tone="sky" sub="Paid, non-cancelled tickets for today" />
+      <Kpi label="Remaining to enter" value={(today.length - admitted).toLocaleString("en-IN")} icon="clock" tone="amber" sub="Not yet scanned" />
+      <Kpi label="Park capacity today" value={capacity.toLocaleString("en-IN")} icon="shield" tone="navy" sub={`${pct}% booked · set in Calendar / Settings`} />
     </div>
   );
 }
@@ -233,11 +262,11 @@ function CalendarMgmt() {
 function TicketMgmt() {
   const { db, update, toast } = useStore();
   const [edit, setEdit] = useState<TicketCat | null>(null);
-  const save = () => { if (!edit) return; update((d) => { const i = d.tickets.findIndex((t) => t.id === edit.id); if (i >= 0) d.tickets[i] = edit; else d.tickets.push(edit); }); toast(`${edit.name} saved – customer prices updated`); setEdit(null); };
+  const save = () => { if (!edit) return; update((d) => { const i = d.tickets.findIndex((t) => t.id === edit.id); if (i >= 0) d.tickets[i] = edit; else d.tickets.push(edit); logEvent(d, "ticket", `Ticket category "${edit.name}" saved (price, validity, entitlements)`, edit.id, "Admin"); }); toast(`${edit.name} saved – customer prices updated`); setEdit(null); };
   const sold = (id: string) => db.bookings.filter((b) => b.payment.status === "paid").reduce((s, b) => s + b.tickets.filter((t) => t.catId === id).length, 0);
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">Base prices before GST. Date adjustments are set in Calendar Management.</p><Button icon="plus" onClick={() => setEdit({ id: "t-" + rid(4).toLowerCase(), name: "", kind: "general", audience: "adult", basePrice: 999, description: "", eligibility: "", active: true, dailyLimit: 1000 })}>New ticket category</Button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">Base prices before GST. Date adjustments are set in Calendar Management.</p><Button icon="plus" onClick={() => setEdit({ id: "t-" + rid(4).toLowerCase(), name: "", kind: "general", audience: "adult", basePrice: 999, description: "", eligibility: "", active: true, dailyLimit: 1000, validityNote: "Valid on the selected visit date only", reEntry: false, restrictions: "" })}>New ticket category</Button></div>
       <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 stagger">
         {db.tickets.map((t) => (
           <div key={t.id} className={`card-flat overflow-hidden ${t.active ? "" : "opacity-60"}`}>
@@ -245,6 +274,7 @@ function TicketMgmt() {
             <div className="p-4">
               <div className="flex items-start justify-between gap-2"><div><Badge tone={t.kind === "fasttrack" ? "red" : "navy"}>{t.kind === "fasttrack" ? "Fast Track" : "General"} · {t.audience}</Badge><h3 className="mt-2 font-bold text-navy-950">{t.name}</h3></div><Toggle on={t.active} onChange={(v) => { update((d) => { d.tickets.find((x) => x.id === t.id)!.active = v; }); toast(`${t.name} ${v ? "activated" : "deactivated"}`); }} /></div>
               <p className="text-xs text-slate-500 mt-1 line-clamp-2 min-h-8">{t.description}</p>
+              <div className="mt-2 flex flex-wrap gap-1">{t.validityNote && <Badge tone="slate">{t.validityNote}</Badge>}<Badge tone={t.reEntry ? "green" : "slate"}>{t.reEntry ? "Re-entry allowed" : "No re-entry"}</Badge></div>
               <div className="mt-3 flex items-end justify-between"><div><div className="text-[11px] text-slate-400">Base price</div><div className="font-display text-2xl font-bold text-navy-950">{inr(t.basePrice)}</div></div><div className="text-right text-xs text-slate-500"><div>{sold(t.id)} sold</div><div>Limit {t.dailyLimit}/day</div></div></div>
               <Button size="sm" variant="outline" icon="edit" className="mt-3 w-full" onClick={() => setEdit({ ...t })}>Edit</Button>
             </div>
@@ -261,6 +291,9 @@ function TicketMgmt() {
             <Field label="Daily availability"><input type="number" className={inputCls} value={edit.dailyLimit} onChange={(e) => setEdit({ ...edit, dailyLimit: Number(e.target.value) })} /></Field>
             <div className="col-span-2"><Field label="Description"><textarea className={inputCls + " h-20 py-2"} value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></Field></div>
             <div className="col-span-2"><Field label="Eligibility"><input className={inputCls} value={edit.eligibility} onChange={(e) => setEdit({ ...edit, eligibility: e.target.value })} /></Field></div>
+            <div className="col-span-2"><Field label="Validity period" hint="Shown to customers on the ticket card"><input className={inputCls} value={edit.validityNote || ""} placeholder="e.g. Valid on the selected visit date only" onChange={(e) => setEdit({ ...edit, validityNote: e.target.value })} /></Field></div>
+            <div className="col-span-2"><Toggle on={!!edit.reEntry} onChange={(v) => setEdit({ ...edit, reEntry: v })} label="Same-day re-entry allowed" /></div>
+            <div className="col-span-2"><Field label="Restrictions / conditions" hint="Optional · shown to customers"><textarea className={inputCls + " h-16 py-2"} value={edit.restrictions || ""} placeholder="e.g. Height restriction, ID required" onChange={(e) => setEdit({ ...edit, restrictions: e.target.value })} /></Field></div>
             <div className="col-span-2"><Toggle on={edit.active} onChange={(v) => setEdit({ ...edit, active: v })} label="Active – visible to customers" /></div>
           </div>
         )}
@@ -436,6 +469,7 @@ function BookingMgmt() {
   const { db, update, toast } = useStore();
   const [q, setQ] = useState(""); const [pay, setPay] = useState("all"); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [view, setView] = useState<Booking | null>(null); const [exp, setExp] = useState("");
+  const [modify, setModify] = useState<Booking | null>(null);
   const [page, setPage] = useState(0);
   const rows = db.bookings.filter((b) => (pay === "all" || b.payment.status === pay) && (!from || b.visitDate >= from) && (!to || b.visitDate <= to) &&
     (!q || [b.id, b.customer.name, b.customer.phone, b.customer.email, ...b.tickets.map((t) => t.id)].join(" ").toLowerCase().includes(q.toLowerCase())));
@@ -468,7 +502,10 @@ function BookingMgmt() {
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 text-sm text-slate-500"><span>{rows.length} bookings</span><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)} icon="left" /><span>{page + 1} / {Math.max(1, Math.ceil(rows.length / per))}</span><Button size="sm" variant="outline" disabled={(page + 1) * per >= rows.length} onClick={() => setPage(page + 1)} icon="right" /></div></div>
       </div>
       <Modal open={!!live} wide onClose={() => setView(null)} title={live ? `Booking ${live.id}` : ""}
-        footer={live && live.status !== "cancelled" && live.payment.status === "paid" ? <Button variant="danger" icon="refresh" onClick={() => { update((d) => { const b = d.bookings.find((x) => x.id === live.id)!; b.status = "cancelled"; b.payment.status = "refunded"; b.tickets.forEach((t) => { if (t.status !== "used") t.status = "cancelled"; }); b.refund = { amount: Math.round(b.totals.total * 0.9), at: nowStamp(), reason: "Cancelled by admin (10% fee)" }; }); reportCancelled(live.id, "Cancelled by admin (10% fee)"); toast("Booking cancelled · refund initiated (simulated)"); }}>Cancel & refund</Button> : undefined}>
+        footer={live && live.status !== "cancelled" && live.payment.status === "paid" ? <>
+          <Button variant="outline" icon="edit" onClick={() => setModify(live)}>Modify booking</Button>
+          <Button variant="danger" icon="refresh" onClick={() => { if (!window.confirm(`Cancel ${live.id} and refund ${inr(live.totals.total - Math.round(live.totals.total * 0.1))} (10% fee)? This can't be undone.`)) return; update((d) => { adminCancel(d, live.id); }); reportCancelled(live.id, "Cancelled by admin (10% fee)"); toast("Booking cancelled · refund initiated (simulated)"); }}>Cancel & refund</Button>
+        </> : undefined}>
         {live && (
           <div className="grid md:grid-cols-2 gap-5 text-sm">
             <div className="space-y-3">
@@ -476,7 +513,8 @@ function BookingMgmt() {
               <div className="grid grid-cols-2 gap-2"><Info k="Visit date" v={fmtDate(live.visitDate)} /><Info k="Booked on" v={fmtTime(live.createdAt)} /><Info k="Payment" v={<Badge tone={payTone(live.payment.status)}>{live.payment.status}</Badge>} /><Info k="Entry" v={<Badge tone={entryOf(live).tone}>{entryOf(live).label}</Badge>} /></div>
               <div><div className="font-bold mb-1">Items</div>{live.items.map((i) => <div key={i.label} className="flex justify-between py-0.5"><span>{i.qty}× {i.label}</span><span>{inr(i.amount)}</span></div>)}
                 <div className="border-t border-slate-100 mt-2 pt-2 space-y-0.5"><div className="flex justify-between text-emerald-700"><span>Discounts</span><span>– {inr(live.totals.discount)}</span></div><div className="flex justify-between"><span>GST</span><span>{inr(live.totals.tax)}</span></div><div className="flex justify-between font-bold"><span>Total</span><span>{inr(live.totals.total)}</span></div></div></div>
-              <div className="rounded-xl border border-slate-200 p-3"><div className="font-bold mb-1">Cancellation / refund</div>{live.refund ? <div className="text-violet-700">Refunded {inr(live.refund.amount)} on {fmtTime(live.refund.at)} · {live.refund.reason}</div> : <div className="text-slate-500">Regular tickets: cancellable up to 48 hrs before visit with 10% fee. Offer tickets: non-refundable.</div>}</div>
+              <div className="rounded-xl border border-slate-200 p-3"><div className="font-bold mb-1">Cancellation / refund</div><RefundStatus b={live} />
+                {live.modifications?.length ? <div className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-500">{live.modifications.map((m) => <div key={m.at}>Modified {fmtTime(m.at)}: {fmtShort(m.previousVisitDate)} → {fmtShort(m.visitDate)}, {inr(m.previousTotal)} → {inr(m.newTotal)}</div>)}</div> : null}</div>
             </div>
             <div><div className="font-bold mb-2">Tickets &amp; QR references</div>
               <div className="space-y-2 max-h-96 overflow-y-auto">{live.tickets.map((t) => (
@@ -486,11 +524,120 @@ function BookingMgmt() {
           </div>
         )}
       </Modal>
+      {modify && <ModifyBookingModal booking={modify} onClose={() => setModify(null)} />}
       <Modal open={!!exp} onClose={() => setExp("")} title="Export booking data (CSV)"><p className="text-sm text-slate-500 mb-2">Downloads are disabled in this preview. Copy the sample CSV below:</p><textarea readOnly className="w-full h-64 rounded-xl border border-slate-200 p-2 font-mono text-[11px]" value={exp} onFocus={(e) => e.target.select()} /></Modal>
     </div>
   );
 }
 const Info = ({ k, v }: { k: string; v: React.ReactNode }) => <div className="rounded-xl bg-slate-50 p-2.5"><div className="text-[11px] text-slate-500">{k}</div><div className="font-semibold text-navy-950">{v}</div></div>;
+
+function RefundStatus({ b }: { b: Booking }) {
+  const r = b.refund;
+  if (!r) return <div className="text-slate-500">Regular tickets: cancellable up to 48 hrs before visit with 10% fee. Offer tickets: non-refundable.</div>;
+  if (r.status === "pending") return <div><Badge tone="amber">Cancellation requested · pending review</Badge><div className="mt-1 text-slate-600">Indicative refund {inr(r.amount)} (fee {inr(r.deduction || 0)}) · approve or reject under Payment Management → Pending refund requests.</div></div>;
+  if (r.status === "rejected") return <div className="text-red-700">Rejected · {r.rejectionReason} · {fmtTime(r.rejectedAt || r.at)}</div>;
+  return <div className="text-violet-700">Refunded {inr(r.amount)} on {fmtTime(r.approvedAt || r.at)} · {r.reason}</div>;
+}
+
+function RefundRequests() {
+  const { db, update, toast } = useStore();
+  const [reject, setReject] = useState<Booking | null>(null); const [reason, setReason] = useState("");
+  const pending = db.bookings.filter((b) => b.refund?.status === "pending");
+  return (
+    <div className="card-flat overflow-hidden">
+      <div className="p-3 font-bold text-navy-950 flex items-center gap-2">Pending refund requests {pending.length > 0 && <Badge tone="amber">{pending.length}</Badge>}</div>
+      {pending.length === 0 ? <div className="px-4 pb-4 text-sm text-slate-500">No pending refund requests.</div> : (
+        <div className="overflow-x-auto"><table className="w-full"><thead className="bg-slate-50"><tr><Th>Booking</Th><Th>Customer</Th><Th>Visit date</Th><Th>Requested</Th><Th>Paid</Th><Th>Fee</Th><Th>Refund</Th><Th /></tr></thead>
+          <tbody className="divide-y divide-slate-100">{pending.map((b) => (
+            <tr key={b.id}><Td className="font-mono text-xs font-semibold">{b.id}</Td><Td>{b.customer.name}</Td><Td>{fmtShort(b.visitDate)}</Td><Td className="text-xs">{fmtTime(b.refund!.requestedAt || b.refund!.at)}</Td><Td>{inr(b.totals.total)}</Td><Td>{inr(b.refund!.deduction || 0)}</Td><Td className="font-semibold">{inr(b.refund!.amount)}</Td>
+              <Td><div className="flex gap-1.5">
+                <Button size="sm" onClick={() => { if (!window.confirm(`Approve refund of ${inr(b.refund!.amount)} for ${b.id}? Its tickets will be cancelled.`)) return; update((d) => { approveRefund(d, b.id); }); reportCancelled(b.id, "Customer cancellation approved"); toast("Refund approved (simulated – no money moved)"); }}>Approve</Button>
+                <Button size="sm" variant="outline" onClick={() => { setReason(""); setReject(b); }}>Reject</Button>
+              </div></Td></tr>))}</tbody></table></div>)}
+      <Modal open={!!reject} onClose={() => setReject(null)} title={`Reject cancellation ${reject?.id || ""}`}
+        footer={<><Button variant="ghost" onClick={() => setReject(null)}>Back</Button><Button variant="danger" disabled={reason.trim().length < 3} onClick={() => { const id = reject!.id; update((d) => { rejectRefund(d, id, reason); }); toast("Cancellation request rejected"); setReject(null); }}>Reject request</Button></>}>
+        <p className="text-sm text-slate-500 mb-3">The booking stays valid. The reason is shown to the customer in their booking.</p>
+        <Field label="Reason"><input className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Request received less than 48 hours before the visit" autoFocus /></Field>
+      </Modal>
+    </div>
+  );
+}
+
+function ModifyBookingModal({ booking, onClose }: { booking: Booking; onClose: () => void }) {
+  const { db, update, toast } = useStore();
+  const [date, setDate] = useState(booking.visitDate);
+  const [qty, setQty] = useState<Record<string, number>>(() => { const m: Record<string, number> = {}; booking.tickets.forEach((t) => { if (t.status !== "cancelled") m[t.catId] = (m[t.catId] || 0) + 1; }); return m; });
+  const [addons, setAddons] = useState<Record<string, number>>(() => Object.fromEntries(booking.items.filter((i) => i.kind === "addon").map((i) => [i.refId, i.qty])));
+  const elig = modificationEligibility(booking, db);
+  const ds = dateStatus(date, db);
+  const pr = priceCart({ tickets: qty, offers: {}, addons, coupon: "" }, date, { tickets: db.tickets, offers: db.offers, dateCfg: db.dateCfg, settings: db.settings }, TODAY, db.addons);
+  const diff = pr.total - booking.totals.total;
+  const Stepper = ({ v, set }: { v: number; set: (n: number) => void }) => <div className="flex items-center gap-2"><Button size="sm" variant="outline" onClick={() => set(Math.max(0, v - 1))} aria-label="Decrease">−</Button><span className="w-6 text-center tabular-nums">{v}</span><Button size="sm" variant="outline" onClick={() => set(v + 1)} aria-label="Increase">+</Button></div>;
+  const save = () => {
+    // Dry-run on a copy first: React may apply the update() callback later, so its result can't be read synchronously.
+    const trial: DB = JSON.parse(JSON.stringify(db));
+    const r = modifyBooking(trial, booking.id, date, qty, addons);
+    if (!r.ok) { toast(r.error, "err"); return; }
+    update((d) => { modifyBooking(d, booking.id, date, qty, addons); });
+    reportModified(trial.bookings.find((b) => b.id === booking.id)!);
+    toast(`Booking ${booking.id} updated${diff ? ` · ${diff > 0 ? "collect" : "refund"} ${inr(Math.abs(diff))} (simulated)` : ""}`);
+    onClose();
+  };
+  return (
+    <Modal open wide onClose={onClose} title={`Modify booking ${booking.id}`}
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button disabled={!elig.ok || !ds.open || pr.ticketCount === 0} onClick={save}>Save · {inr(pr.total)}</Button></>}>
+      {!elig.ok ? <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">{elig.reason}</div> : (
+        <div className="grid md:grid-cols-2 gap-5 text-sm">
+          <div className="space-y-4">
+            <Field label="Visit date" error={ds.open ? undefined : ds.reason}><DateInput value={date} onChange={setDate} min={TODAY} max={MAX_DATE} /></Field>
+            <div><div className="font-bold mb-2">Tickets</div>{db.tickets.filter((t) => t.active || qty[t.id]).map((t) => <div key={t.id} className="flex items-center justify-between py-1"><span>{t.name}</span><Stepper v={qty[t.id] || 0} set={(n) => setQty({ ...qty, [t.id]: n })} /></div>)}</div>
+            <div><div className="font-bold mb-2">Add-ons</div>{db.addons.map((a) => <div key={a.id} className="flex items-center justify-between py-1"><span>{a.name} <span className="text-slate-400">{inr(a.price)}</span></span><Stepper v={addons[a.id] || 0} set={(n) => setAddons({ ...addons, [a.id]: n })} /></div>)}</div>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-4 space-y-1 self-start">
+            <div className="flex justify-between"><span>Current total</span><span>{inr(booking.totals.total)}</span></div>
+            <div className="flex justify-between font-bold text-navy-950"><span>New total</span><span>{inr(pr.total)}</span></div>
+            <div className={`flex justify-between ${diff > 0 ? "text-amber-700" : diff < 0 ? "text-emerald-700" : "text-slate-500"}`}><span>{diff > 0 ? "To collect" : diff < 0 ? "To refund" : "Difference"}</span><span>{inr(Math.abs(diff))}</span></div>
+            <p className="pt-2 text-xs text-slate-500">Existing ticket QR codes stay valid where the category is kept; removed tickets stop working. The price difference is not charged or refunded automatically (simulated).</p>
+          </div>
+        </div>)}
+    </Modal>
+  );
+}
+
+function NotificationsPage() {
+  const { db, update } = useStore();
+  const list = db.notifications || [];
+  const unread = list.filter((n) => !n.read).length;
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-slate-500">{unread} unread · generated by bookings, cancellations, refunds and changes in this app. No email, SMS or WhatsApp is sent.</p><Button size="sm" variant="outline" disabled={!unread} onClick={() => update((d) => { (d.notifications || []).forEach((n) => (n.read = true)); })}>Mark all read</Button></div>
+      {list.length === 0 ? <div className="card-flat"><Empty text="No notifications yet — they appear as bookings, cancellations, refunds and changes happen." /></div> : (
+        <div className="space-y-2">{list.slice(0, 200).map((n) => (
+          <div key={n.id} className={`card-flat p-3 flex items-start justify-between gap-3 ${n.read ? "opacity-60" : ""}`}>
+            <div><div className="text-sm font-semibold text-navy-950">{n.message}</div><div className="text-xs text-slate-500 mt-0.5">{fmtTime(n.at)} · {n.type}{n.ref && <> · <span className="font-mono">{n.ref}</span></>}</div></div>
+            {!n.read ? <Button size="sm" variant="ghost" onClick={() => update((d) => { const x = (d.notifications || []).find((y) => y.id === n.id); if (x) x.read = true; })}>Mark read</Button> : <Badge>Read</Badge>}
+          </div>))}</div>)}
+    </div>
+  );
+}
+
+function ActivityLog() {
+  const { db } = useStore();
+  const [q, setQ] = useState("");
+  const rows = useMemo(() => [
+    ...(db.auditLog || []).map((a) => ({ at: a.at, desc: a.message, ref: a.ref, actor: a.actor, type: a.type })),
+    ...db.scans.map((s) => ({ at: s.at, desc: `Gate scan at ${s.gate} · ${s.result} · ${s.reason}`, ref: s.bookingId, actor: s.staffId, type: "scan" })),
+  ].filter((r) => !q || `${r.desc} ${r.ref} ${r.actor}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 300), [db.auditLog, db.scans, q]);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 justify-between"><p className="text-sm text-slate-500">Admin actions, customer requests and gate scans recorded in this app. Demonstration log — not a tamper-proof security audit trail.</p>
+        <div className="relative w-64"><Icon name="search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input className={inputCls + " pl-9"} placeholder="Search booking, staff, action…" value={q} onChange={(e) => setQ(e.target.value)} /></div></div>
+      <div className="card-flat overflow-hidden"><div className="overflow-x-auto"><table className="w-full"><thead className="bg-slate-50"><tr><Th>When</Th><Th>Action</Th><Th>Reference</Th><Th>Actor</Th></tr></thead>
+        <tbody className="divide-y divide-slate-100">{rows.map((r, i) => <tr key={i}><Td className="text-xs">{fmtTime(r.at)}</Td><Td className="whitespace-normal">{r.desc}</Td><Td className="font-mono text-xs">{r.ref}</Td><Td className="text-xs">{r.actor}</Td></tr>)}</tbody></table>
+        {rows.length === 0 && <Empty text="No activity recorded yet." />}</div></div>
+    </div>
+  );
+}
 
 // ---------- Payments ----------
 function PaymentMgmt() {
@@ -501,12 +648,13 @@ function PaymentMgmt() {
   const byMethod = ["UPI", "Card", "Net Banking"].map((m, i) => ({ label: m, value: db.bookings.filter((b) => b.payment.method === m && b.payment.status === "paid").length, color: PALETTE[i] }));
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 stagger"><Kpi label="Captured" value={inr(sum("paid"))} icon="checkCircle" tone="green" /><Kpi label="Pending" value={inr(sum("pending"))} icon="clock" tone="amber" /><Kpi label="Failed" value={inr(sum("failed"))} icon="xCircle" tone="red" /><Kpi label="Refunded" value={inr(db.bookings.reduce((a, b) => a + (b.refund?.amount || 0), 0))} icon="refresh" tone="sky" /></div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 stagger"><Kpi label="Captured" value={inr(sum("paid"))} icon="checkCircle" tone="green" /><Kpi label="Pending" value={inr(sum("pending"))} icon="clock" tone="amber" /><Kpi label="Failed" value={inr(sum("failed"))} icon="xCircle" tone="red" /><Kpi label="Refunded" value={inr(db.bookings.reduce((a, b) => a + (isRefunded(b) ? b.refund!.amount : 0), 0))} icon="refresh" tone="sky" sub="Approved refunds only" /></div>
+      <RefundRequests />
       <div className="grid lg:grid-cols-[1fr_320px] gap-4">
         <div className="card-flat overflow-hidden">
           <div className="p-3 flex gap-1.5 flex-wrap">{["all", "paid", "pending", "failed", "refunded"].map((s) => <button key={s} onClick={() => setSt(s)} className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize ${st === s ? "bg-navy-950 text-white" : "bg-slate-100 text-slate-600"}`}>{s}</button>)}</div>
           <div className="overflow-x-auto max-h-[560px]"><table className="w-full"><thead className="bg-slate-50 sticky top-0"><tr><Th>Transaction ID</Th><Th>Booking</Th><Th>Gateway</Th><Th>Method</Th><Th>Amount</Th><Th>Status</Th><Th>Date</Th><Th>Refund</Th></tr></thead>
-            <tbody className="divide-y divide-slate-100">{rows.slice(0, 80).map((b) => <tr key={b.id}><Td className="font-mono text-xs">{b.payment.txnId}</Td><Td className="font-mono text-xs font-semibold">{b.id}</Td><Td>{b.payment.gateway}</Td><Td>{b.payment.method}</Td><Td className="font-semibold">{inr(b.totals.total)}</Td><Td><Badge tone={payTone(b.payment.status)}>{b.payment.status}</Badge></Td><Td className="text-xs">{fmtTime(b.payment.at)}</Td><Td className="text-xs">{b.refund ? <span className="text-violet-700 font-semibold">{inr(b.refund.amount)} processed</span> : "—"}</Td></tr>)}</tbody></table></div>
+            <tbody className="divide-y divide-slate-100">{rows.slice(0, 80).map((b) => <tr key={b.id}><Td className="font-mono text-xs">{b.payment.txnId}</Td><Td className="font-mono text-xs font-semibold">{b.id}</Td><Td>{b.payment.gateway}</Td><Td>{b.payment.method}</Td><Td className="font-semibold">{inr(b.totals.total)}</Td><Td><Badge tone={payTone(b.payment.status)}>{b.payment.status}</Badge></Td><Td className="text-xs">{fmtTime(b.payment.at)}</Td><Td className="text-xs">{!b.refund ? "—" : isRefunded(b) ? <span className="text-violet-700 font-semibold">{inr(b.refund.amount)} processed</span> : b.refund.status === "pending" ? <span className="text-amber-700 font-semibold">{inr(b.refund.amount)} requested</span> : <span className="text-red-700">Rejected</span>}</Td></tr>)}</tbody></table></div>
         </div>
         <Card title="Payment methods (paid)"><Donut data={byMethod} center={{ value: String(byMethod.reduce((a, b) => a + b.value, 0)), label: "payments" }} /></Card>
       </div>
