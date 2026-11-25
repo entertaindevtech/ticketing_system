@@ -3,6 +3,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from app.catalog import seed_catalog
 from app.config import Settings
 from app.db import Base
 from app.main import create_app
@@ -15,6 +16,7 @@ if os.path.exists(_env):
         if _k and not _k.startswith("#") and _v.strip():
             os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
 
+TODAY = "2026-11-20"  # a Friday; the park's clock is pinned in tests (DEMO_TODAY)
 ADMIN = {"X-Admin-Token": "test-admin-token-0123456789abcdef"}
 
 
@@ -40,13 +42,15 @@ def settings(tmp_path):
     # Set TEST_DATABASE_URL (e.g. a throwaway PostgreSQL database) to run the suite on Postgres; tables are dropped after each test.
     url = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.db'}"
     return Settings(database_url=url, admin_api_token="test-admin-token-0123456789abcdef",
-                    public_app_url="https://book.example.test", frontend_dist=str(tmp_path / "nodist"))
+                    public_app_url="https://book.example.test", frontend_dist=str(tmp_path / "nodist"), demo_today=TODAY)
 
 
 @pytest.fixture
 def app(settings):
     a = create_app(settings)
     Base.metadata.create_all(a.state.engine)
+    with a.state.sessionmaker() as s:
+        seed_catalog(s)
     a.state.geo = FakeGeo()
     yield a
     Base.metadata.drop_all(a.state.engine)

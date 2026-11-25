@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from .api import admin, events, public
+from .api_shop import shop
 from .config import Settings, get_settings
 from .db import make_engine, make_sessionmaker
 from .geo import GeoLookup
@@ -47,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "geoip_available": app.state.geo.available}
 
     app.include_router(public)
+    app.include_router(shop)
     app.include_router(events)
     app.include_router(admin)
 

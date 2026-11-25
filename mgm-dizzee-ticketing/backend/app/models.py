@@ -1,14 +1,14 @@
-"""Influencer & regional sales intelligence schema.
+"""Database schema: catalog and park configuration, the booking ledger (customers, bookings, tickets, inventory,
+payments, refunds, lifecycle records), staff accounts, gate scans, and the influencer & regional intelligence tables.
 
-Bookings themselves still live in the existing front-end store; this module keeps a
-booking *attribution* row per attributed booking (keyed by the booking reference), which
-is where the attribution and regional snapshot are frozen for historical reporting.
+PostgreSQL is the source of truth for all of it. booking_attributions freezes each paid website booking's
+region / acquisition source / influencer at payment time for historical reporting.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func,
+    JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -157,3 +157,54 @@ class CommissionEvent(Base):
     to_status: Mapped[str] = mapped_column(String(16), nullable=False)
     note: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+# ---------- catalog & park configuration (milestone A) ----------
+# Catalog rows keep the front-end's own shape in `data` (camelCase, as src/store.ts types it), so the pricing
+# engine and the admin editors exchange the same objects. Columns that SQL must filter, lock or constrain are
+# kept alongside and are authoritative over `data` (e.g. offers.redemptions).
+class ParkSettings(Base):
+    __tablename__ = "park_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    __table_args__ = (CheckConstraint("id = 1", name="ck_park_settings_singleton"),)
+
+
+class TicketCategory(Base):
+    __tablename__ = "ticket_categories"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)  # "ga", "gc", "fa", "fc"
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    daily_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    __table_args__ = (CheckConstraint("daily_limit >= 0", name="ck_ticket_category_limit"),)
+
+
+class Addon(Base):
+    __tablename__ = "addons"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class Offer(Base):
+    __tablename__ = "offers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    coupon: Mapped[str | None] = mapped_column(String(32), unique=True)  # upper-case; NULL for automatic offers
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    max_redemptions: Mapped[int] = mapped_column(Integer, nullable=False)
+    redemptions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('draft','scheduled','active','paused','expired')", name="ck_offer_status"),
+        CheckConstraint("redemptions >= 0 AND max_redemptions >= 0", name="ck_offer_redemptions"),
+    )
+
+
+class ParkDate(Base):
+    """Per-date overrides: closed, blackout, capacity, price adjustment, note (the prototype's dateCfg)."""
+    __tablename__ = "park_dates"
+    visit_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)

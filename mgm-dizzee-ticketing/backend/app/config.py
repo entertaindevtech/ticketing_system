@@ -28,6 +28,14 @@ class Settings:
     trusted_proxy_hops: int = field(default_factory=lambda: _int("TRUSTED_PROXY_HOPS", 1))
     cors_origins: list[str] = field(default_factory=lambda: [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()])
     frontend_dist: str = field(default_factory=lambda: os.environ.get("FRONTEND_DIST", "../dist"))
+    # development | staging | production. production refuses unsafe settings at start-up (see main.check_production).
+    app_env: str = field(default_factory=lambda: os.environ.get("APP_ENV", "development").strip().lower())
+    # Pins the park's "today" (YYYY-MM-DD) for demos and tests. Never set in production.
+    demo_today: str | None = field(default_factory=lambda: os.environ.get("DEMO_TODAY") or None)
+
+
+def _bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, "1" if default else "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_settings() -> Settings:
