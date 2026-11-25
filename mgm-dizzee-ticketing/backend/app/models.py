@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func,
+    JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -381,3 +381,60 @@ class Notification(Base):
     ref: Mapped[str | None] = mapped_column(String(40))
     message: Mapped[str] = mapped_column(String(500), nullable=False)
     read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+# ---------- booking lifecycle (milestone C) ----------
+class CancellationRequest(Base):
+    __tablename__ = "cancellation_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(16), nullable=False)  # customer | admin
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="pending")
+    fee: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    refund_amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    rejection_reason: Mapped[str | None] = mapped_column(String(255))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(32))
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','approved','rejected')", name="ck_cancellation_status"),
+        # at most one open request per booking
+        Index("uq_cancellation_pending", "booking_id", unique=True, postgresql_where=text("status = 'pending'"), sqlite_where=text("status = 'pending'")),
+    )
+
+
+class Refund(Base):
+    __tablename__ = "refunds"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id"), nullable=False)
+    cancellation_request_id: Mapped[int | None] = mapped_column(ForeignKey("cancellation_requests.id"))
+    modification_id: Mapped[int | None] = mapped_column(ForeignKey("booking_modifications.id"))
+    amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    fee: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="pending")
+    provider_refund_id: Mapped[str | None] = mapped_column(String(80), unique=True)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_by: Mapped[str | None] = mapped_column(String(32))
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','processing','succeeded','failed')", name="ck_refund_status"),
+        CheckConstraint("amount > 0", name="ck_refund_amount"),
+    )
+
+
+class BookingModification(Base):
+    __tablename__ = "booking_modifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    by: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_visit_date: Mapped[date] = mapped_column(Date, nullable=False)
+    visit_date: Mapped[date] = mapped_column(Date, nullable=False)
+    previous_total: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    new_total: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    settlement: Mapped[str] = mapped_column(String(8), nullable=False)  # none | collect | refund
+    before: Mapped[dict] = mapped_column(JSON, nullable=False)
+    after: Mapped[dict] = mapped_column(JSON, nullable=False)

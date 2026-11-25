@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from .api import admin, events, public
+from .api_admin_booking import customer_lifecycle, staff_bookings
 from .api_booking import booking_api
 from .api_shop import shop
 from .config import Settings, get_settings
@@ -51,6 +52,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(public)
     app.include_router(shop)
     app.include_router(booking_api)
+    app.include_router(customer_lifecycle)
+    app.include_router(staff_bookings)
     app.include_router(events)
     app.include_router(admin)
 
