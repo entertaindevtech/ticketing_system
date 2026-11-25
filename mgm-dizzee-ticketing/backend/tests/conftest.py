@@ -127,3 +127,21 @@ def paid_booking(client, **kw):
     res = pay_sim(client, created)
     assert res.status_code == 200, res.text
     return created, res.json()
+
+
+# ---------- staff accounts ----------
+CSRF = {"X-Requested-With": "mgm-app"}
+STAFF_PW = "correct-horse-battery"
+
+
+def make_staff(db, code="STF2001", roles="gate", gate="Main Gate A", password=STAFF_PW, active=True):
+    from app import auth
+    from app.models import User
+    u = User(code=code, name=f"Staff {code}", roles=roles, gate=gate, password_hash=auth.hash_password(password), active=active)
+    db.add(u)
+    db.commit()
+    return u
+
+
+def login(client, code="STF2001", password=STAFF_PW):
+    return client.post("/api/auth/login", json={"code": code, "password": password})

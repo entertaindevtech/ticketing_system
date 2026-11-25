@@ -460,3 +460,29 @@ class GateScan(Base):
         CheckConstraint("result IN ('valid','duplicate','invalid')", name="ck_scan_result"),
         Index("uq_scan_client_id", "device_id", "client_scan_id", unique=True),
     )
+
+
+# ---------- staff accounts (milestone E) ----------
+class User(Timestamps, Base):
+    """Staff / administrator account. roles: comma-separated subset of admin, finance, counter, gate, marketing."""
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)  # staff ID, e.g. STF1024
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(40))
+    gate: Mapped[str | None] = mapped_column(String(60))
+    roles: Mapped[str] = mapped_column(String(120), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)  # Argon2id
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)  # SHA-256 of the cookie value
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

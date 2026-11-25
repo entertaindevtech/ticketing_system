@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from . import analytics, services
+from .auth import require_roles
 from .geo import client_ip
 from .models import BookingAttribution, Influencer, InfluencerCommission
 
@@ -31,19 +32,6 @@ def cfg(request: Request):
     return request.app.state.settings
 
 
-PLACEHOLDER_TOKENS = {"change-me-to-a-long-random-string", "changeme", "admin"}
-MIN_TOKEN_LEN = 24
-
-
-def require_admin(request: Request, x_admin_token: str | None = Header(default=None)):
-    expected = request.app.state.settings.admin_api_token
-    if not expected or len(expected) < MIN_TOKEN_LEN or expected in PLACEHOLDER_TOKENS:
-        # Fail closed: a missing, short or copied-from-example token never opens the admin API.
-        raise HTTPException(503, f"Admin API disabled: set ADMIN_API_TOKEN to a random secret of at least {MIN_TOKEN_LEN} characters")
-    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
-        raise HTTPException(401, "Invalid admin token")
-
-
 def require_events_token(request: Request, x_booking_events_token: str | None = Header(default=None)):
     expected = request.app.state.settings.booking_events_token
     if expected and not (x_booking_events_token and hmac.compare_digest(x_booking_events_token, expected)):
@@ -52,7 +40,8 @@ def require_events_token(request: Request, x_booking_events_token: str | None = 
 
 public = APIRouter(prefix="/api")
 events = APIRouter(prefix="/api/booking-events", dependencies=[Depends(require_events_token)])
-admin = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
+# Influencer & regional intelligence screens: admins and marketing staff (or the break-glass ADMIN_API_TOKEN).
+admin = APIRouter(prefix="/api/admin", dependencies=[Depends(require_roles("admin", "marketing"))])
 
 
 # ---------- public: visitor sessions ----------

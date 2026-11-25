@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from .api import admin, events, public
+from .api_auth import auth_api
 from .api_admin_booking import customer_lifecycle, staff_bookings
 from .api_booking import booking_api
 from .api_shop import shop
@@ -41,8 +42,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.geo = GeoLookup(settings.geoip_db_path)
 
     if settings.cors_origins:  # only needed if the front-end is served from a different origin
-        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST", "PATCH"],
-                           allow_headers=["Content-Type", "X-Admin-Token", "X-Booking-Events-Token"])
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+                           allow_headers=["Content-Type", "X-Admin-Token", "X-Booking-Token", "X-Requested-With", "Idempotency-Key"], allow_credentials=True)
 
     @app.get("/api/health")
     def health():
@@ -56,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(customer_lifecycle)
     app.include_router(staff_bookings)
     app.include_router(staff_api)
+    app.include_router(auth_api)
     app.include_router(events)
     app.include_router(admin)
 
