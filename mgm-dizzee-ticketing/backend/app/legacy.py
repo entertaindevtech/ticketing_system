@@ -87,13 +87,17 @@ def import_one(db: Session, raw: dict, today: str, actor: str) -> dict:
         db.add(Payment(booking_id=b.id, provider="legacy", method=str(pay.get("method") or "")[:32], provider_payment_id=f"legacy_{ref}",
                        amount=totals["total"], status="refunded" if cancelled else "captured", captured_at=utcnow()))
         note = ""
+        valid = [x.get("status") == "valid" for x in tickets]
+        stocked = False
         if status == "confirmed" and vd.isoformat() >= today:
             try:
                 with db.begin_nested():
-                    issued = [u for u, x in zip(units, tickets) if x.get("status") == "valid"]
-                    inventory.sell(db, catalog.load_ctx(db), vd.isoformat(), issued)
+                    inventory.sell(db, catalog.load_ctx(db), vd.isoformat(), [u for u, v in zip(units, valid) if v])
+                    stocked = True
             except inventory.SoldOut:
                 note = "imported over capacity: inventory for that date was not reduced"
+        # record which admissions hold inventory, so a later cancellation or change releases exactly that
+        b.units = [{**u, "stock": stocked and v} for u, v in zip(units, valid)]
         attr = db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == ref))
         if attr and attr.booking_id is None:
             attr.booking_id = b.id

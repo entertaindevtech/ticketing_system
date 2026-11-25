@@ -42,7 +42,8 @@ def ensure_rows(db: Session, ctx: dict, d: str, cat_ids) -> None:
 
 
 def counts(units: list[dict]) -> Counter:
-    return Counter(u["catId"] for u in units)
+    # stock=False marks admissions that never took inventory (legacy imports over capacity or for past dates)
+    return Counter(u["catId"] for u in units if u.get("stock", True))
 
 
 def _apply(db: Session, d: str, per_cat: Counter, *, held: int = 0, sold: int = 0, check: bool) -> None:

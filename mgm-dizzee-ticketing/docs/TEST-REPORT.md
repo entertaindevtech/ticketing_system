@@ -17,6 +17,16 @@ One test was added after the PostgreSQL run: `test_production_refuses_unsafe_set
 
 The single warning comes from a third-party library: Starlette's TestClient deprecation of `httpx`.
 
+## Merge-readiness review (26 Nov 2026)
+
+One release-blocking defect was found and fixed: cancelling or modifying a **legacy-imported booking that could not take inventory** (imported over capacity) returned **500**. The engine tried to release stock the booking never held. Admissions now record whether they hold stock, and cancellation and modification release exactly that.
+- Regression test: `test_legacy_bookings_cancel_and_change_without_corrupting_inventory`.
+- Re-run after the fix:
+  - SQLite: full suite;
+  - PostgreSQL: the booking, lifecycle, admin, counter/gate, concurrency and migration suites.
+
+Results are in the review report.
+
 ## What the backend suite covers
 
 Counts are tests (parametrized cases expanded).

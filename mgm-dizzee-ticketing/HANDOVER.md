@@ -234,7 +234,7 @@ The server decides each result:
   Point the service's `DATABASE_URL` at it and redeploy. `alembic upgrade head` is a no-op on a restored, up-to-date database.
 - **Restore drill.** Restore the latest dump into a scratch database at least once before launch and run `python -m alembic current`. It must print `0007 (head)`.
 - **Secrets.** Back up `APP_SECRET` in the password manager. Without it, existing QR codes and booking links cannot be verified, and the bookings themselves are safe in the database.
-- **Migrations.** All migrations are additive, and each one has a tested `downgrade`. To roll back code, redeploy the previous image. Downgrade the schema only if the old code cannot run against the new one: from 0007 to 0003 every step only removes the newly added tables.
+- **Migrations.** All migrations are additive, and each one has a tested `downgrade`. To roll back code, redeploy the previous image. Downgrade the schema only if the old code cannot run against the new one: going from 0007 down to 0003 removes the new booking tables and the `booking_id`/`channel` columns of `booking_attributions`, and with them all booking-engine data. Take a backup first. Migrations run online (`alembic upgrade head`); the offline `--sql` preview cannot render the JSON catalog seed in `0003`.
 - **Audit trail.** `audit_log` is append-only by application design. To make it tamper-evident against database administrators, restrict `DELETE` and `UPDATE` on it with a separate PostgreSQL role (a recommended hardening step).
 
 ## 10. Known limitations and outstanding MGM decisions

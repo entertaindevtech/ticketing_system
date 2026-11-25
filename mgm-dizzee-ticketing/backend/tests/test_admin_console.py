@@ -4,7 +4,7 @@ from datetime import date
 from sqlalchemy import func, select
 
 from app import demo_seed
-from app.models import Booking, BookingAttribution, CategoryInventory, User
+from app.models import Booking, BookingAttribution, CategoryInventory, DateInventory, User
 from .conftest import ADMIN, TODAY, book, click, login, make_influencer, make_staff, paid_booking
 
 
@@ -118,3 +118,27 @@ def test_demo_seed_creates_role_accounts_and_engine_bookings(db, settings):
     n = db.scalar(select(func.count()).select_from(Booking).where(Booking.origin == "demo_seed", Booking.status == "confirmed"))
     assert n >= 8
     assert "already present" in demo_seed.seed_demo(db, settings)
+
+
+def test_legacy_bookings_cancel_and_change_without_corrupting_inventory(client, db):
+    """Imports that could not take inventory (over capacity) must still be cancellable, and must not release
+    stock that other bookings hold; imports that did take inventory give it back exactly once."""
+    one = lambda ref, code, d: {**LEGACY, "id": ref, "visitDate": d,  # noqa: E731
+                                "tickets": [{"id": code, "catId": "ga", "label": "General Adult", "status": "valid"}]}
+    assert client.put("/api/admin/park-dates/2026-12-09", json={"capacity": 2}, headers=ADMIN).status_code == 200
+    paid_booking(client, visit_date="2026-12-09")                        # takes the 2 places
+    r = client.post("/api/admin/legacy-import", headers=ADMIN, json={"bookings": [
+        one("MGM-OVER01", "TKT-OVERAA01", "2026-12-09"), one("MGM-FITS01", "TKT-FITSAA01", "2026-12-10")]}).json()
+    assert [x["result"] for x in r["results"]] == ["imported", "imported"] and "over capacity" in r["results"][0]["reason"]
+    assert client.post("/api/admin/bookings/MGM-OVER01/cancel", headers=ADMIN).status_code == 200
+    db.expire_all()
+    assert db.get(DateInventory, date(2026, 12, 9)).sold == 2              # the paid booking keeps its places
+    assert db.get(DateInventory, date(2026, 12, 10)).sold == 1
+    assert client.post("/api/admin/bookings/MGM-FITS01/cancel", headers=ADMIN).status_code == 200
+    db.expire_all()
+    assert db.get(DateInventory, date(2026, 12, 10)).sold == 0
+    r = client.post("/api/admin/legacy-import", headers=ADMIN, json={"bookings": [one("MGM-OVER02", "TKT-OVERAA02", "2026-12-09")]}).json()
+    m = client.post("/api/admin/bookings/MGM-OVER02/modify", headers=ADMIN, json={"visit_date": "2026-12-11", "tickets": {"ga": 1}, "addons": {}})
+    assert m.status_code == 200
+    db.expire_all()
+    assert db.get(DateInventory, date(2026, 12, 9)).sold == 2 and db.get(DateInventory, date(2026, 12, 11)).sold == 1

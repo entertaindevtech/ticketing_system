@@ -17,6 +17,17 @@ from .models import Booking, BookingItem, BookingModification, CancellationReque
 IMMEDIATE_REFUND_PROVIDERS = ("simulated", "counter", "legacy")  # no gateway call needed; marked done at once
 
 
+def _stocked(b: Booking, tickets: list[Ticket]) -> list[dict]:
+    """The inventory these tickets actually hold: per category, never more than the booking's stocked admissions."""
+    left = inventory.counts(b.units)
+    out = []
+    for t in tickets:
+        if left[t.category_id] > 0:
+            left[t.category_id] -= 1
+            out.append({"catId": t.category_id})
+    return out
+
+
 def _charge(b: Booking) -> Payment | None:
     return next((p for p in b.payments if p.kind == "charge" and p.status in ("captured", "partially_refunded", "refunded")), None)
 
@@ -69,7 +80,7 @@ def _cancel(db: Session, b: Booking, req: CancellationRequest, actor: str) -> Re
     unused = [t for t in b.tickets if t.status == "issued"]
     for t in unused:
         t.status = "void"
-    inventory.release_sold(db, b.visit_date.isoformat(), [{"catId": t.category_id} for t in unused])
+    inventory.release_sold(db, b.visit_date.isoformat(), _stocked(b, unused))
     b.status, b.cancelled_at, b.version = "cancelled", utcnow(), b.version + 1
     charge = _charge(b)
     refund = None
@@ -194,7 +205,7 @@ def modify_booking(db: Session, cfg: Settings, ref: str, visit_date: str, ticket
     before = _snapshot(b)
     old_date, old_total = b.visit_date, b.total
     issued = [x for x in b.tickets if x.status == "issued"]
-    inventory.release_sold(db, old_date.isoformat(), [{"catId": x.category_id} for x in issued])
+    inventory.release_sold(db, old_date.isoformat(), _stocked(b, issued))
     try:
         inventory.sell(db, ctx, visit_date, units)
     except inventory.SoldOut as e:
