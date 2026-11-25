@@ -1,0 +1,272 @@
+# Influencer & Regional Sales Intelligence — Technical Handover
+
+Branch: `feat/influencer-regional-intelligence` · Date: 25 Nov 2026
+
+This adds influencer management, referral attribution, approximate regional (IP-based) sales intelligence and commission management to the MGM ticketing app.
+
+> **Read §12 first.** The rest of the app is still a browser-only prototype (bookings live in `localStorage`, payment is simulated). The new module is a real backend, but its booking and payment events still come from that prototype front-end. It is ready for review, **not** for production money flows.
+
+---
+
+## 1. Architecture and decisions
+
+**What was there.** The repository had no backend. `src/` is a React 19 + Vite + Tailwind v4 app (customer booking, admin console, staff scanner) whose entire database is a JSON object in `localStorage` (`src/ui.tsx`, key `mgm-dizzee-proto-v3`). The payment is simulated in `PaymentStep` (`src/customer.tsx`) and always succeeds. Cancellation is the admin "Cancel & refund" button (`src/admin.tsx`). `static-build/index.html` is a separately hand-patched single-file build. It has eight extra features that are **not** in `src/`, and this work does not touch it.
+
+**What was added.** A modular-monolith backend (Python, FastAPI, SQLAlchemy 2, Alembic, PostgreSQL) in `backend/`. A single Railway service serves both the API (`/api/*`) and the built React app, so the browser talks to the same origin and production needs no CORS.
+
+**Smallest sensible integration.** Moving the whole booking system to the server was out of scope ("do not rebuild the ticketing system"). Instead, the backend keeps one **booking attribution** row per *referred* booking, keyed by the booking reference (e.g. `MGM-7TXBFB`). The front-end reports three lifecycle events:
+
+| Event | Where it fires | Endpoint |
+|---|---|---|
+| Payment confirmed | `PaymentStep` success, right after the booking is saved | `POST /api/booking-events/paid` |
+| Cancelled / refunded | Admin › Bookings › "Cancel & refund" | `POST /api/booking-events/cancelled` |
+| Modified | Backend endpoint only. `src/` has no booking-modification feature yet (it exists only in `static-build`), so nothing calls it today. | `POST /api/booking-events/modified` |
+
+Events go through a small `localStorage` outbox (`src/referral.ts`). It retries after network errors and 5xx responses, so a brief API outage does not lose a sale. If the API is down, booking still works exactly as before.
+
+**Decisions**
+- First-click attribution with a 30-day window. Both are configurable (`ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`); `last_click` is also supported.
+- The referral session token is kept in `localStorage`, not a cookie, so attribution works even if the API is later moved to another origin.
+- Campaigns are a validated tag (`campaign=` parameter, lower-cased, `[a-z0-9_-]`, max 64 characters), not a separate admin-managed table. Any tag an influencer uses is reported automatically, and invalid tags are dropped while the click still counts.
+- Referral codes cannot be edited once created, because shared links must keep resolving. To retire a code, deactivate the influencer.
+- Deactivating an influencer stops **new** clicks from being tracked. Visitors already attributed within their window still convert. This is deliberate: the click happened while the influencer was active.
+- No Redis, queues, or extra services. GeoLite2 refresh is a daemon thread in the app (§5).
+
+## 2. New and changed files
+
+**New:**
+```
+Dockerfile, .dockerignore, railway.json           Railway build/deploy
+backend/app/config.py                             settings from env vars
+backend/app/db.py                                 engine/session; postgres:// URL normalisation
+backend/app/models.py                             schema (§3)
+backend/app/services.py                           attribution + commission engine (§4, §6)
+backend/app/analytics.py                          aggregations (§7)
+backend/app/geo.py                                client-IP extraction, GeoLite2 reader, region buckets
+backend/app/geoip_update.py                       atomic GeoLite2 download/refresh
+backend/app/api.py                                HTTP endpoints (§8)
+backend/app/main.py                               app factory, health check, static front-end
+backend/alembic/ (+ alembic.ini)                  migration 0001
+backend/scripts/update_geoip.py                   manual GeoLite2 refresh
+backend/tests/                                    31 tests
+backend/requirements.txt, backend/.env.example
+src/referral.ts                                   ?ref capture, session token, event outbox
+src/influencers.tsx                               Admin › Influencers & Regions UI
+```
+**Changed (minimal, additive):**
+- `src/main.tsx`: one line that calls `captureReferral()` on load.
+- `src/customer.tsx`: one `reportPaid(b)` call after a successful payment.
+- `src/admin.tsx`:
+  - the new nav entry under a "Marketing" group;
+  - one `reportCancelled()` call in "Cancel & refund";
+  - `export` added to the existing `Card`, `Kpi`, `Th`, `Td` and `Empty` components so the new module reuses them.
+- `.gitignore`.
+
+**Now version-controlled for the first time:** the existing `src/`, `public/`, `index.html`, `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts` and `README.md`. Before this, only `static-build/index.html` was committed, and the backend change cannot work without its front-end.
+
+**Not committed:**
+- `vercel.json`: Vercel hosting is out of scope and superseded by Railway.
+- The `static-build` backup files.
+- `static-html-prototype/` and `documentation/`.
+
+## 3. Database schema (migration `0001`)
+
+| Table | Purpose | Key constraints |
+|---|---|---|
+| `influencers` | profile, platform, contact, `commission_rate` (%), `active` | `referral_code` UNIQUE; CHECK rate 0–100 |
+| `referral_sessions` | anonymous visitor session created by the first valid click; holds the **geo snapshot** | `token` UNIQUE; FK influencer; `expires_at` |
+| `referral_clicks` | every referral visit (including repeats); `kept_existing_attribution` flags clicks that did not change attribution | FK influencer, session; index (influencer_id, created_at) |
+| `booking_attributions` | one per referred **paid** booking; amounts plus a frozen copy of the geo snapshot; `status` paid/cancelled | `booking_ref` UNIQUE (idempotency); CHECK status |
+| `influencer_commissions` | rate snapshot, basis, amount, status, approval/payout/reversal timestamps | `booking_attribution_id` UNIQUE (one commission per booking); CHECK status |
+| `commission_events` | append-only history of every status or amount change | FK commission |
+
+Money is stored as `NUMERIC(12,2)` and timestamps as `TIMESTAMPTZ` (UTC). No existing data is touched, because the existing bookings are in browsers, not in this database.
+
+Run migrations: `cd backend && alembic upgrade head`. The Docker start command runs this automatically on every deploy, and it is safe to repeat.
+
+## 4. Referral attribution lifecycle
+
+1. A visitor opens `https://<domain>/?ref=RAHUL01&campaign=summer2026`. The URL is generated from `PUBLIC_APP_URL` and the code.
+2. `captureReferral()` removes `ref`/`campaign` from the address bar, so a refresh or re-share doesn't count again. It then calls `POST /api/referrals/click` with any token it already holds.
+3. The server validates the code format and that the influencer exists and is active (404 otherwise; the front-end ignores it). Then:
+   - **Live session already held** (first-click model): the server keeps it and records the click for the clicked influencer with `kept_existing_attribution=true`. Influencer A stays attributed.
+   - **No session, or it has expired**: the server creates a new session (30-day expiry), does the **one** GeoIP lookup (§5), and records the click.
+4. The token is stored in `localStorage`, so it survives navigation, reloads and the whole booking flow.
+5. On payment success, `reportPaid` sends the booking reference, token and amounts. The server attributes the booking only if the payment status is `paid` and the session exists and is unexpired at payment time. It then freezes influencer, campaign and geo snapshot onto the booking row.
+6. `booking_ref` is unique, so repeats are ignored. A later call with a different token cannot re-attribute the booking.
+
+A booking without a referral session is never sent to the server.
+
+## 5. GeoIP lookup lifecycle
+
+- **When:** only when a referral session is created. It never runs on page views, and it never blocks booking.
+- **IP source:** `X-Forwarded-For`. The server trusts only the last `TRUSTED_PROXY_HOPS` entries (default 1 = the Railway edge). Entries further left are client-supplied and ignored, which prevents location spoofing. Private and reserved addresses are not looked up. **Check after the first Railway deploy:** click a referral link from a known location and confirm the region. If everything shows Unknown, adjust `TRUSTED_PROXY_HOPS`.
+- **Raw IPs are never stored and never shown.** Only country code and name, state/region and city are kept.
+- **Database:** MaxMind **GeoLite2 City (global)** MMDB, read with `maxminddb`, at `GEOIP_DB_PATH`.
+- **Provisioning and refresh:**
+  - With `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY` set, the app checks the file at startup and then daily, and downloads a new copy when it is missing or older than 7 days. The GeoLite EULA requires using a release no more than 30 days old.
+  - The download is written to `*.tmp`, validated, then swapped in with an atomic `os.replace()`. The reader notices the new modification time and reopens it, so lookups are never interrupted.
+  - A failed download keeps the old file.
+  - Manual refresh: `python scripts/update_geoip.py --force`.
+- **Without the database** (no credentials yet, or a download failure), lookups return nothing and those sessions report as **Unknown**. The admin screen shows a warning banner.
+- **Buckets:**
+  - no country → `Unknown`;
+  - country ≠ IN → `Outside India`;
+  - India with no state or city → `Unknown`.
+
+  Coordinates are not stored, and no map is drawn, to avoid false precision.
+- **Licensing:** the attribution sentence is in the admin UI footer, the OpenAPI description and the code headers. The MMDB is git-ignored, Docker-ignored, and never served over HTTP, because the static route only serves the built `dist/` folder.
+
+> **Accuracy:** IP geolocation estimates where the visitor's network is, not where they live. City-level results for Indian mobile networks are often the carrier's hub city or simply absent. State-level figures are more reliable than city-level ones. District-level accuracy is not claimed.
+
+## 6. Commission rules
+
+- A commission is created **only** when a payment is reported as `paid` for an attributed booking. Failed or pending payments create nothing.
+- **Basis** (`COMMISSION_BASIS`):
+  - default `ticket_net_ex_gst` = subtotal − discounts − add-ons, i.e. ticket revenue after offers and coupons, excluding GST and add-ons;
+  - alternative `total_ex_gst` also includes add-ons.
+- **Amount** = basis × rate ÷ 100, rounded half-up to the paisa.
+- The rate is **copied onto the commission** at payment time, so changing an influencer's rate affects only future bookings.
+- **Statuses:** `pending → approved → paid`, and any of these → `reversed`.
+  - Approve accepts only `pending`.
+  - Mark paid accepts only `approved` and requires a payout reference. It **only records** a settlement made outside the system; no money moves.
+- **Cancellation or refund** marks the booking `cancelled` and the commission `reversed`. If it had already been paid out, the history note says the money must be recovered from the influencer.
+- **Modification:**
+  - a `pending` commission is recalculated with its original rate snapshot;
+  - an approved or paid commission keeps its amount and gets a "review manually" history entry;
+  - a second commission is never created.
+- Every change is recorded in `commission_events`, which is visible in the admin commission detail view.
+
+## 7. Analytics definitions
+
+| Metric | Definition (filtered by date range) |
+|---|---|
+| Clicks | all referral visits recorded (by click date) |
+| Unique referral sessions | sessions created (by date) |
+| Attributed bookings | referred bookings paid in the period, including ones later cancelled |
+| Paid bookings | attributed bookings still `paid` (not cancelled or refunded) |
+| Conversion rate | paid bookings ÷ unique sessions |
+| Tickets / Revenue | over paid bookings; revenue is the amount paid **including GST** |
+| Commission earned | commissions that are not reversed |
+| Commission owed | pending + approved |
+| Commission paid | status `paid` |
+
+Regional tables (state, city, influencer × state) count **paid** bookings only and always include an `Unknown` row when one applies. Campaign rows count clicks by the click's own tag. Sessions and bookings stay with the campaign of the session's first click.
+
+## 8. API endpoints
+
+The OpenAPI docs are at `/docs` and `/openapi.json`.
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `GET /api/health` | – | health check (checks the DB; reports `geoip_available`) |
+| `POST /api/referrals/click` | – | record a click and get or keep the session token |
+| `POST /api/booking-events/paid` · `/cancelled` · `/modified` | optional `X-Booking-Events-Token` | booking lifecycle (§1) |
+| `GET/POST /api/admin/influencers`, `PATCH /api/admin/influencers/{id}` | `X-Admin-Token` | influencer management |
+| `GET /api/admin/commissions?influencer_id&status&from&to` | `X-Admin-Token` | list or filter commissions |
+| `GET /api/admin/commissions/{id}` | `X-Admin-Token` | detail, calculation and history |
+| `POST /api/admin/commissions/{id}/approve`, `/mark-paid` | `X-Admin-Token` | settlement workflow |
+| `GET /api/admin/analytics?from&to&influencer_id` | `X-Admin-Token` | everything on the dashboard |
+
+**Admin authentication.** The app has no user login anywhere, so admin endpoints require a shared token (`ADMIN_API_TOKEN`). It is compared in constant time. An admin pastes it once into Admin › Influencers & Regions, where it is kept in `sessionStorage` for that tab only and never put in the JS bundle. If the token is unset, the admin API returns 503, so it is never accidentally open.
+
+## 9. Environment variables
+
+See `backend/.env.example`.
+
+| Variable | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | yes | Railway Postgres reference (`${{Postgres.DATABASE_URL}}`). `postgres://` URLs are converted automatically. |
+| `ADMIN_API_TOKEN` | yes | long random secret |
+| `PUBLIC_APP_URL` | yes | public origin used to build referral URLs, e.g. `https://book.mgmdizzeeworld.com` |
+| `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY` | for regions | free GeoLite account |
+| `GEOIP_DB_PATH` | – | default `/data/GeoLite2-City.mmdb` in the Docker image (put the volume at `/data`) |
+| `TRUSTED_PROXY_HOPS` | – | default `1` (Railway edge) |
+| `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `first_click` / `30` |
+| `COMMISSION_BASIS` | – | `ticket_net_ex_gst` (default) or `total_ex_gst` |
+| `BOOKING_EVENTS_TOKEN` | – | set only once events come from a server (§12) |
+| `CORS_ORIGINS` | – | only if the front-end is served from another origin |
+| `VITE_API_URL` | – | front-end build-time; leave empty for same-origin (default) |
+
+## 10. Railway deployment
+
+The repository root is the outer folder, so the service's **Root Directory** must be `mgm-dizzee-ticketing`.
+
+1. Create a Railway project and add a **PostgreSQL** service.
+2. Add a service from this GitHub repo and set Root Directory to `mgm-dizzee-ticketing`. Railway picks up `railway.json`, which builds the `Dockerfile` and health-checks `/api/health`.
+3. Under Variables, set the values from §9. Set `DATABASE_URL` as a reference to the Postgres service.
+4. Add a **Volume** to the app service mounted at `/data`. The GeoLite2 database persists there across deploys.
+5. Deploy. The start command runs `alembic upgrade head` and then `uvicorn` on `$PORT`.
+6. Smoke test:
+   1. `GET /api/health` shows `"status":"ok"`, plus `"geoip_available": true` once MaxMind credentials are set.
+   2. In Admin › Influencers & Regions, enter the admin token and add an influencer.
+   3. Open its link, book, and confirm the commission appears.
+   4. Check the region (§5, `TRUSTED_PROXY_HOPS`).
+
+**Notes**
+- Build strategy: a multi-stage Dockerfile runs `npm ci && npm run build`. Python then serves `dist/` with a fallback to the single-page app, while `/api/*` stays the API.
+- Runs **one** uvicorn worker. For more, increase `--workers`. The GeoLite refresh thread runs per worker but is safe because the swap is atomic.
+- Nothing has been deployed. That needs Railway access and your go-ahead.
+
+## 11. Testing performed
+
+**Automated: 31 tests, all passing** (`cd backend && pytest`). They cover:
+- referral code validation and inactive influencers;
+- click recording; first-click retention; expiry after 30 days; one GeoIP lookup per session;
+- Unknown, partial and Outside-India buckets; spoofed `X-Forwarded-For`; private IPs; missing or corrupt MMDB;
+- attribution on payment; commission basis with discounts; failed and pending payments;
+- duplicate payment callbacks; attempts to re-attribute after booking; rate-change snapshots;
+- cancellation reversal with history; modification before and after approval; the approve/pay transition rules;
+- analytics aggregation including campaigns, regions and date filters;
+- GeoLite refresh skip and failure safety; health check;
+- the Alembic migration upgrading, matching the models and downgrading.
+
+**Where they ran.** Tests ran on **SQLite** because no PostgreSQL server was available on the dev machine. The migration was rendered as PostgreSQL DDL with `alembic upgrade head --sql` and checked, but it was **not executed against a real Postgres**. To run the suite on Postgres: `TEST_DATABASE_URL=postgresql://… pytest`.
+
+**Front-end:** `tsc --noEmit` is clean and `npm run build` succeeds.
+
+**Browser end-to-end** (built-in browser; backend serving the built app on SQLite at `localhost:8765`):
+1. Admin › Influencers & Regions: entered the token, added an influencer, and confirmed the referral link was generated.
+2. Opened `/?ref=PRIYA01&campaign=Diwali2026`. The session token was stored with a 30-day expiry and the parameters were removed from the URL.
+3. Completed a real booking through the customer flow (date → 1 General Adult → details → simulated UPI payment). The outbox drained.
+4. The server showed a `pending` commission of ₹87.92 = ₹1,099 × 8% (GST excluded), campaign `diwali2026`, region `Unknown` (localhost, no MMDB). The dashboard KPIs, influencer table and region cards rendered these figures.
+5. Approved the commission in the Commissions tab.
+6. Admin › Bookings › Cancel & refund changed the commission to `reversed`, with history `pending → approved → reversed`. Analytics dropped it from paid bookings and revenue.
+7. No console errors.
+
+**Not verified:**
+- PostgreSQL execution.
+- The Docker image build (the Docker daemon was not running).
+- Railway deployment and the real `X-Forwarded-For` layout behind Railway's edge.
+- A real GeoLite2 download and lookup. No MaxMind credentials were available, so the lookup was tested with a fake reader.
+- Mobile layout of the new screens.
+- The Staff Scanner was not re-tested; it was not modified.
+
+**Local Windows note:** this machine's Application Control policy blocks SQLAlchemy's compiled extension and the `uvicorn.exe` launcher. Set `DISABLE_SQLALCHEMY_CEXT_RUNTIME=1` and use `python -m uvicorn`. Linux/Railway is unaffected.
+
+## 12. Known limitations and next steps
+
+1. **Booking events come from the browser.** Bookings and the simulated payment live in the customer's browser, so `/api/booking-events/*` is called by the front-end and is unauthenticated. A determined user could post a fake "paid" event for a referral session they hold, creating a pending commission. Admin approval is the control for now. **Before real money:**
+   - Move bookings to the server.
+   - Have the Razorpay webhook (with its signature verified) call `confirm_payment`, and the booking backend call cancel/modify.
+   - Then set `BOOKING_EVENTS_TOKEN` so the browser can no longer call these endpoints.
+2. **Admin bookings live in each browser's `localStorage`.** The prototype's admin and customer screens only share data within one browser. Cancellations made from another device still reach the server (the event carries the booking reference), but the influencer dashboard is the only cross-device view.
+3. **Booking modification is not wired up in `src/`** because the feature does not exist there yet. When it is added, call `reportModified(b)` from `src/referral.ts`.
+4. **`static-build/index.html` was not changed.** It does not contain this module, and `src/` does not contain its eight hand-patched features. The two front-ends have diverged; pick one source of truth.
+5. **No partial refunds.** Any cancellation reverses the whole commission. The existing "Cancel & refund" keeps 10%, but the commission is reversed in full. Confirm this policy with MGM.
+6. **Paid commission reversal does not claw money back automatically.** It is flagged in the history for finance to recover.
+7. **IP location is approximate** (§5). VPN, corporate and mobile carrier IPs skew results.
+8. **Privacy.**
+   - Stored: an anonymous random session token, click timestamps, campaign tag, and approximate country/state/city.
+   - Not stored: IP addresses, user agents, or any new personal data.
+   - The booking reference links this to the booking, which itself holds the customer's contact details in the existing system.
+   - Purpose: influencer attribution and commission only.
+   - Before launch, add a line to the privacy notice ("we estimate your approximate region from your IP address to measure marketing performance") and set a retention period for `referral_clicks` and `referral_sessions`, for example 13 months.
+9. **Future work:**
+   - a Postgres CI job;
+   - CSV export of commissions;
+   - bulk approve;
+   - a choropleth map of India once data volume justifies it;
+   - per-influencer payout statements.
+
+This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com.

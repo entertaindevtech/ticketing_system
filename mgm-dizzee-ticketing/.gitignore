@@ -1,0 +1,12 @@
+node_modules
+dist
+.vercel
+.DS_Store
+*.log
+.claude/
+backend/.venv/
+backend/data/
+__pycache__/
+*.db
+*.mmdb
+.env
