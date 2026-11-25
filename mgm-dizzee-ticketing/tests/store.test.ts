@@ -1,142 +1,54 @@
-// Regression tests for booking business rules. Run: npm test  (Node >= 22.18 strips TypeScript natively)
+// Front-end rules that remain in the browser: the price preview and the display-only eligibility hints.
+// Authoritative booking behaviour (payment, tickets, cancellation, refunds, modification, gate) is tested on the
+// server: backend/tests. Run: npm test  (Node >= 22.18 strips TypeScript natively)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  type Booking, type DB, TODAY, addDays, adminCancel, approveRefund, buildBooking, cancellationEligibility, evaluateScan,
-  isRefunded, logEvent, modifyBooking, priceCart, qrPayload, rejectRefund, requestCancellation, seedDB,
+  type Booking, SEED_DATE_CFG, addDays, cancellationEligibility, cancellationFee, defaultSettings, modificationEligibility, priceCart,
+  seedAddons, seedOffers, seedTickets, setToday,
 } from "../src/store.ts";
 
-function setup(visitDate = addDays(TODAY, 5), cart = { tickets: { ga: 2 } as Record<string, number>, offers: {} as Record<string, number>, addons: { food: 1 } as Record<string, number>, coupon: "" }) {
-  const d: DB = seedDB();
-  const ctx = { tickets: d.tickets, offers: d.offers, dateCfg: d.dateCfg, settings: d.settings };
-  const pr = priceCart(cart, visitDate, ctx, TODAY, d.addons);
-  const b = buildBooking(cart, pr, visitDate, { name: "Test", phone: "9000000001", email: "t@example.com", visitors: pr.ticketCount, notes: "" }, "UPI", Math.random, undefined, ctx);
-  d.bookings.unshift(b);
-  return { d, b: () => d.bookings.find((x) => x.id === b.id) as Booking };
+setToday("2026-11-20", { saleStart: "2026-11-01", saleEnd: "2026-12-31" });
+const ctx = { tickets: seedTickets(), offers: seedOffers(), dateCfg: SEED_DATE_CFG(), settings: defaultSettings() };
+
+function booking(over: Partial<Booking> = {}): Booking {
+  return {
+    id: "MGM-TEST01", createdAt: "2026-11-20T10:00:00", visitDate: "2026-12-02",
+    customer: { name: "T", phone: "9000000001", email: "", visitors: 2, notes: "" },
+    items: [], offerIds: [], coupon: "", totals: { subtotal: 2547, discount: 0, addons: 349, tax: 458, total: 3005, complimentary: 0 },
+    payment: { txnId: "x", method: "UPI", status: "paid", gateway: "", at: "" }, status: "confirmed",
+    tickets: [{ id: "TKT-1", catId: "ga", label: "General Adult", status: "valid" }, { id: "TKT-2", catId: "ga", label: "General Adult", status: "valid" }],
+    ...over,
+  };
 }
 
-test("customer booking: pricing includes add-ons and GST, tickets issued per quantity", () => {
-  const { b, d } = setup();
-  const bk = b();
-  const ga = d.tickets.find((t) => t.id === "ga")!;
-  assert.equal(bk.tickets.length, 2);
-  assert.equal(bk.totals.addons, 349);
-  assert.equal(bk.totals.tax, Math.round(((bk.totals.subtotal - bk.totals.discount) * 18) / 100));
-  assert.ok(bk.totals.subtotal >= ga.basePrice * 2 + 349);
-  assert.equal(bk.payment.status, "paid");
+test("price preview: tickets, add-ons and GST", () => {
+  const p = priceCart({ tickets: { ga: 2 }, offers: {}, addons: { food: 1 }, coupon: "" }, "2026-12-02", ctx, "2026-11-20", seedAddons());
+  assert.equal(p.subtotal, 2547);
+  assert.equal(p.tax, 458);
+  assert.equal(p.total, 3005);
+  assert.equal(p.ticketCount, 2);
 });
 
-test("cancellation request keeps the booking valid until approved and is logged", () => {
-  const { d, b } = setup();
-  assert.ok(requestCancellation(d, b().id));
-  assert.equal(b().status, "confirmed");
-  assert.equal(b().refund?.status, "pending");
-  assert.equal(b().refund?.deduction, Math.round(b().totals.total * 0.1));
-  assert.equal(b().refund!.amount + b().refund!.deduction!, b().totals.total);
-  assert.ok(b().tickets.every((t) => t.status === "valid"));
-  assert.ok(!isRefunded(b()));
-  assert.equal(d.notifications![0].ref, b().id);
-  assert.equal(d.auditLog![0].actor, "Customer");
-  assert.equal(requestCancellation(d, b().id), false, "no duplicate request");
+test("price preview: weekend and holiday adjustments, blackout handled by date status", () => {
+  const sat = priceCart({ tickets: { ga: 1 }, offers: {}, addons: {}, coupon: "" }, "2026-11-28", ctx, "2026-11-20", seedAddons());
+  assert.equal(sat.lines[0].unit, Math.round(1099 * 1.1));
+  const xmas = priceCart({ tickets: { ga: 1 }, offers: {}, addons: {}, coupon: "" }, "2026-12-25", ctx, "2026-11-20", seedAddons());
+  assert.equal(xmas.lines[0].unit, Math.round(1099 * 1.25));
 });
 
-test("cancellation eligibility rules", () => {
-  const unpaid = setup(); unpaid.b().payment.status = "pending";
-  assert.match(cancellationEligibility(unpaid.b()).reason, /Only paid/);
-  const soon = setup(addDays(TODAY, 1));
-  assert.match(cancellationEligibility(soon.b()).reason, /48 hours/);
-  const offer = setup(); offer.b().offerIds = ["o-student"];
-  assert.match(cancellationEligibility(offer.b()).reason, /offer/);
-  const used = setup(); used.b().tickets[0].status = "used";
-  assert.equal(cancellationEligibility(used.b()).ok, false);
-  assert.equal(cancellationEligibility(setup().b()).ok, true);
+test("cancellation hints follow the server's rules and the configured fee", () => {
+  const s = { cancelNoticeDays: 2, cancellationFeePct: 25 };
+  assert.deepEqual(cancellationEligibility(booking(), s), { ok: true, reason: "" });
+  assert.equal(cancellationFee(booking(), s), 751);
+  assert.match(cancellationEligibility(booking({ visitDate: addDays("2026-11-20", 1) }), s).reason, /48 hours/);
+  assert.match(cancellationEligibility(booking({ offerIds: ["o-family"] }), s).reason, /offer/);
+  assert.match(cancellationEligibility(booking({ payment: { txnId: "", method: "", status: "pending", gateway: "", at: "" } }), s).reason, /paid/);
+  assert.match(cancellationEligibility(booking({ refund: { amount: 1, at: "", reason: "", status: "pending" } }), s).reason, /pending/);
 });
 
-test("approving a refund cancels the booking and its tickets fail at the gate", () => {
-  const { d, b } = setup();
-  requestCancellation(d, b().id);
-  assert.ok(approveRefund(d, b().id));
-  assert.equal(b().status, "cancelled");
-  assert.equal(b().payment.status, "refunded");
-  assert.equal(b().refund?.status, "approved");
-  assert.ok(isRefunded(b()));
-  assert.ok(b().tickets.every((t) => t.status === "cancelled"));
-  const r = evaluateScan(qrPayload(b().tickets[0], b()), d);
-  assert.equal(r.kind, "invalid");
-  assert.equal(approveRefund(d, b().id), false, "cannot approve twice");
-});
-
-test("rejecting a refund leaves the booking confirmed with the reason recorded", () => {
-  const { d, b } = setup();
-  requestCancellation(d, b().id);
-  assert.ok(rejectRefund(d, b().id, "Visit already scheduled for group"));
-  assert.equal(b().status, "confirmed");
-  assert.equal(b().refund?.status, "rejected");
-  assert.equal(b().refund?.rejectionReason, "Visit already scheduled for group");
-  assert.ok(!isRefunded(b()));
-  assert.equal(approveRefund(d, b().id), false);
-});
-
-test("admin one-step cancel keeps used tickets as used and refunds total minus 10%", () => {
-  const { d, b } = setup(TODAY);
-  b().tickets[0].status = "used";
-  assert.ok(adminCancel(d, b().id));
-  assert.equal(b().tickets[0].status, "used");
-  assert.equal(b().tickets[1].status, "cancelled");
-  assert.equal(b().refund?.amount, b().totals.total - Math.round(b().totals.total * 0.1));
-  assert.ok(isRefunded(b()));
-  assert.equal(adminCancel(d, b().id), false);
-});
-
-test("modification keeps existing ticket IDs, reprices and records history", () => {
-  const { d, b } = setup();
-  const before = b().tickets.map((t) => t.id);
-  const prevTotal = b().totals.total;
-  const r = modifyBooking(d, b().id, addDays(TODAY, 6), { ga: 3 }, { food: 1 });
-  assert.deepEqual(r, { ok: true, error: "" });
-  assert.equal(b().tickets.length, 3);
-  assert.deepEqual(b().tickets.slice(0, 2).map((t) => t.id), before, "existing QR codes stay valid");
-  assert.equal(new Set(b().tickets.map((t) => t.id)).size, 3);
-  assert.equal(b().visitDate, addDays(TODAY, 6));
-  assert.equal(b().modifications?.[0].previousTotal, prevTotal);
-  assert.equal(b().modifications?.[0].newTotal, b().totals.total);
-  assert.equal(b().payment.status, "paid", "payment record untouched");
-  assert.ok(modifyBooking(d, b().id, addDays(TODAY, 6), { ga: 1 }, {}).ok);
-  assert.deepEqual(b().tickets.map((t) => t.id), [before[0]]);
-  assert.equal(b().totals.addons, 0);
-});
-
-test("modification is refused when it could corrupt tickets or offer pricing", () => {
-  const offer = setup(); offer.b().offerIds = ["o-student"];
-  assert.match(modifyBooking(offer.d, offer.b().id, addDays(TODAY, 6), { ga: 1 }, {}).error, /offers or coupons/);
-  const used = setup(TODAY); used.b().tickets[0].status = "used";
-  assert.match(modifyBooking(used.d, used.b().id, TODAY, { ga: 2 }, {}).error, /used/);
-  const pending = setup(); requestCancellation(pending.d, pending.b().id);
-  assert.match(modifyBooking(pending.d, pending.b().id, addDays(TODAY, 6), { ga: 1 }, {}).error, /pending/);
-  const ok = setup();
-  assert.match(modifyBooking(ok.d, ok.b().id, "2026-12-03", { ga: 1 }, {}).error, /not available/, "blackout date");
-  assert.match(modifyBooking(ok.d, ok.b().id, addDays(TODAY, 6), {}, {}).error, /at least one ticket/);
-  const cancelled = setup(); adminCancel(cancelled.d, cancelled.b().id);
-  assert.equal(modifyBooking(cancelled.d, cancelled.b().id, addDays(TODAY, 6), { ga: 1 }, {}).ok, false);
-});
-
-test("gate validation: valid, duplicate, wrong date, unpaid", () => {
-  const { d, b } = setup(TODAY);
-  const t = b().tickets[0];
-  assert.equal(evaluateScan(qrPayload(t, b()), d).kind, "valid");
-  t.status = "used";
-  assert.equal(evaluateScan(qrPayload(t, b()), d).kind, "duplicate");
-  const future = setup(addDays(TODAY, 3));
-  assert.match(evaluateScan(qrPayload(future.b().tickets[0], future.b()), future.d).reason, /Wrong visit date/);
-  const unpaid = setup(TODAY); unpaid.b().payment.status = "failed";
-  assert.match(evaluateScan(qrPayload(unpaid.b().tickets[0], unpaid.b()), unpaid.d).reason, /Payment not completed/);
-  const forged = qrPayload(t, b()).replace(/\|[^|]+$/, "|XXXX");
-  assert.match(evaluateScan(forged, d).reason, /signature/);
-});
-
-test("activity log is bounded", () => {
-  const d = seedDB();
-  for (let i = 0; i < 2100; i++) logEvent(d, "test", "x", "", "System");
-  assert.equal(d.auditLog!.length, 2000);
-  assert.equal(d.notifications!.length, 500);
+test("modification hints", () => {
+  assert.equal(modificationEligibility(booking(), { dateCfg: {} }).ok, true);
+  assert.match(modificationEligibility(booking({ coupon: "MGM30" }), { dateCfg: {} }).reason, /offers or coupons/);
+  assert.match(modificationEligibility(booking({ tickets: [{ id: "T", catId: "ga", label: "", status: "used" }] }), { dateCfg: {} }).reason, /used/);
 });

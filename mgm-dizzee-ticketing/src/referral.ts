@@ -1,15 +1,12 @@
-// Anonymous visitor sessions (all visitors), influencer referral capture and booking-lifecycle reporting
-// to the backend (backend/app/api.py). Best-effort: if the API is unreachable, booking works exactly as before.
-import type { Booking } from "./store";
-
-export const API = String(import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+// Anonymous visitor sessions (all visitors) and influencer referral capture (backend/app/api.py /api/visits).
+// The session token is sent with each booking; the server records attribution itself when payment is captured.
+import { API } from "./api";
 const SESSION_KEY = "mgm-visitor-session";
 const LEGACY_KEY = "mgm-ref-session"; // referral-only sessions saved before visitor sessions existed
-const OUTBOX_KEY = "mgm-booking-events";
+const RETIRED_OUTBOX = "mgm-booking-events"; // browser-reported booking events: retired, the server records bookings itself
 const TRACKING = ["ref", "campaign", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "msclkid", "dclid", "gbraid", "wbraid", "fbclid"];
 
 type VisitorSession = { token: string; expiresAt: string };
-type Event = { kind: "paid" | "cancelled" | "modified"; body: Record<string, unknown> };
 
 const read = <T,>(k: string, fallback: T): T => { try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
 const write = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } };
@@ -47,33 +44,5 @@ export async function captureVisit() {
   } catch { /* offline / API down */ }
 }
 
-const amounts = (b: Booking) => ({
-  tickets: b.tickets.length, subtotal: b.totals.subtotal, discount: b.totals.discount, addons: b.totals.addons,
-  tax: b.totals.tax, total: b.totals.total, visit_date: b.visitDate,
-});
-
-/** Call once an online payment is confirmed. Every website booking is reported (with or without a session) so
- * regional sales cover all visitors; the server decides whether an influencer commission applies. */
-export function reportPaid(b: Booking) {
-  const token = visitorToken();
-  if (b.payment.status !== "paid") return;
-  enqueue({ kind: "paid", body: { ...amounts(b), booking_ref: b.id, session_token: token, payment_status: b.payment.status, payment_ref: b.payment.txnId, paid_at: new Date().toISOString() } });
-}
-export const reportCancelled = (bookingId: string, reason: string) => enqueue({ kind: "cancelled", body: { booking_ref: bookingId, reason } });
-export const reportModified = (b: Booking) => enqueue({ kind: "modified", body: { ...amounts(b), booking_ref: b.id } });
-
-function enqueue(e: Event) { write(OUTBOX_KEY, [...read<Event[]>(OUTBOX_KEY, []), e]); void flushOutbox(); }
-
-let flushing = false;
-/** Sends queued events in order. Network errors and 5xx keep the event for the next page load; 4xx drops it. */
-export async function flushOutbox() {
-  if (flushing) return;
-  flushing = true;
-  try {
-    for (let q = read<Event[]>(OUTBOX_KEY, []); q.length; q = read<Event[]>(OUTBOX_KEY, [])) {
-      const r = await fetch(`${API}/api/booking-events/${q[0].kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(q[0].body) });
-      if (r.status >= 500) break;
-      write(OUTBOX_KEY, read<Event[]>(OUTBOX_KEY, []).slice(1));
-    }
-  } catch { /* offline: retry next load */ } finally { flushing = false; }
-}
+/** Old builds queued browser-reported payment events here; the server no longer accepts them. */
+export function dropRetiredOutbox() { try { localStorage.removeItem(RETIRED_OUTBOX); } catch { /* ignore */ } }

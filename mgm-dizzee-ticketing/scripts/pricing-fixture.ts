@@ -5,7 +5,7 @@
 //   node scripts/pricing-fixture.ts
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { addDays, datesBetween, defaultSettings, priceCart, seedAddons, seedDB, seedOffers, seedTickets, type Cart, type Ctx } from "../src/store.ts";
+import { SEED_DATE_CFG, addDays, datesBetween, defaultSettings, priceCart, seedAddons, seedOffers, seedTickets, type Cart, type Ctx } from "../src/store.ts";
 
 export const FIXTURE = fileURLToPath(new URL("../backend/tests/fixtures/pricing_parity.json", import.meta.url));
 
@@ -18,7 +18,7 @@ export function buildFixture() {
   offers.push({ ...offers[0], id: "o-scheduled", status: "scheduled", bookingStart: "2026-11-22" });
   const ctx: Ctx & { addons: ReturnType<typeof seedAddons> } = {
     tickets: seedTickets().map((t) => (t.id === "fc" ? { ...t, basePrice: 1499.5 } : t)), // a half-rupee base exercises rounding
-    offers, dateCfg: { ...seedDB().dateCfg, "2026-12-10": { priceAdj: 7 }, "2026-12-11": { priceAdj: 0 } }, settings: defaultSettings(), addons: seedAddons(),
+    offers, dateCfg: { ...SEED_DATE_CFG(), "2026-12-10": { priceAdj: 7 }, "2026-12-11": { priceAdj: 0 } }, settings: defaultSettings(), addons: seedAddons(),
   };
   const dates = datesBetween("2026-11-15", "2026-12-31");
   const coupons = ["", "", "", "MGM30", "mgm30 ", "FASTFRI", "DIZZEE10", "NOPE"];

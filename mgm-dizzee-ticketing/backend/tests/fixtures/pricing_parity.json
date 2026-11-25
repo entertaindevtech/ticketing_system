@@ -431,7 +431,9 @@
    "parkName": "MGM Dizzee World",
    "phone": "+91 44 2747 2434",
    "email": "bookings@mgmdizzeeworld.com",
-   "defaultCapacity": 4000
+   "defaultCapacity": 4000,
+   "cancellationFeePct": 25,
+   "cancelNoticeDays": 2
   },
   "addons": [
    {

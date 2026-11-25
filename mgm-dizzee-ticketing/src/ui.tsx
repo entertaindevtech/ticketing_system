@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { DB, seedDB } from "./store";
+import { DB, setToday } from "./store";
+import { api } from "./api";
 import { qrSvgPath } from "./qr";
 import logoUrl from "./assets/logo.png";
 
@@ -76,25 +77,58 @@ export function Icon({ name, size = 18, className = "", strokeWidth = 2 }: { nam
 }
 
 // ---------- store context ----------
-const KEY = "mgm-dizzee-proto-v3";
-type Store = { db: DB; update: (fn: (d: DB) => DB | void) => void; reset: () => void; toast: (msg: string, tone?: "ok" | "warn" | "err") => void };
+// The server is the source of truth. The store holds the public catalog and, for signed-in admin/finance staff,
+// the admin console's working set (GET /api/admin/state). Every change is an API call followed by a refresh;
+// nothing transactional is kept in browser storage.
+export type Me = { id: string; name: string; roles: string[]; gate: string };
+type Store = {
+  db: DB; me: Me | null; setMe: (m: Me | null) => void;
+  refresh: () => Promise<void>;
+  /** Runs an API mutation, shows its error (or the success message) and refreshes the data. */
+  call: <T>(fn: () => Promise<T>, ok?: string) => Promise<T | undefined>;
+  toast: (msg: string, tone?: "ok" | "warn" | "err") => void;
+};
 const Ctx = createContext<Store>(null as unknown as Store);
 export const useStore = () => useContext(Ctx);
+export const hasRole = (me: Me | null, ...roles: string[]) => !!me && (me.roles.includes("admin") || roles.some((r) => me.roles.includes(r)));
 
-function load(): DB {
-  try { const s = localStorage.getItem(KEY); if (s) { const d = JSON.parse(s); if (d && d.version === 3) return d; } } catch { /* storage unavailable */ }
-  return seedDB();
-}
+const EMPTY: DB = {
+  tickets: [], offers: [], addons: [], dateCfg: {}, bookings: [], scans: [], staff: [], version: 3, notifications: [], auditLog: [],
+  settings: { gst: 18, openTime: "", closeTime: "", parkName: "MGM Dizzee World", phone: "", email: "", defaultCapacity: 0, cancellationFeePct: 25, cancelNoticeDays: 2 },
+};
+
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [db, setDb] = useState<DB>(load);
+  const [db, setDb] = useState<DB>(EMPTY);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [err, setErr] = useState("");
+  const [me, setMe] = useState<Me | null>(null);
+  const [checked, setChecked] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; msg: string; tone: string }[]>([]);
-  useEffect(() => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* ignore */ } }, [db]);
-  const store = useMemo<Store>(() => ({
-    db,
-    update: (fn) => setDb((prev) => { const copy: DB = JSON.parse(JSON.stringify(prev)); const r = fn(copy); return r || copy; }),
-    reset: () => setDb(seedDB()),
-    toast: (msg, tone = "ok") => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, msg, tone }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200); },
-  }), [db]);
+  const toast = useCallback((msg: string, tone: "ok" | "warn" | "err" = "ok") => {
+    const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, msg, tone }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === "err" ? 6000 : 3200);
+  }, []);
+  const refresh = useCallback(async () => {
+    const cat = await api<DB & { today: string }>("/api/catalog");
+    setToday(cat.today, cat.settings);
+    const admin = hasRole(me, "finance") ? await api<Partial<DB>>("/api/admin/state").catch(() => ({})) : {};
+    setDb({ ...EMPTY, ...cat, ...admin });
+  }, [me]);
+  useEffect(() => { api<Me>("/api/auth/me").then(setMe).catch(() => setMe(null)).finally(() => setChecked(true)); }, []);
+  const load = useCallback(() => { setPhase("loading"); refresh().then(() => setPhase("ready")).catch((e: Error) => { setErr(e.message); setPhase("error"); }); }, [refresh]);
+  useEffect(() => { if (checked) load(); }, [checked, load]);
+  const call = useCallback(async <T,>(fn: () => Promise<T>, ok?: string) => {
+    try { const r = await fn(); await refresh().catch(() => undefined); if (ok) toast(ok); return r; }
+    catch (e) { toast((e as Error).message, "err"); await refresh().catch(() => undefined); return undefined; }
+  }, [refresh, toast]);
+  const store = useMemo<Store>(() => ({ db, me, setMe, refresh, call, toast }), [db, me, refresh, call, toast]);
+  if (phase !== "ready") return (
+    <div className="min-h-screen grid place-items-center bg-slate-50 p-6 text-center">
+      {phase === "loading" ? <div className="text-slate-500 text-sm flex items-center gap-2"><span className="h-4 w-4 rounded-full border-2 border-slate-300 border-t-navy-950 animate-spin" />Loading…</div>
+        : <div className="max-w-sm"><Icon name="alert" size={32} className="mx-auto text-mgm-red mb-3" /><div className="font-bold text-navy-950">{err}</div>
+          <p className="text-sm text-slate-500 mt-1">Bookings, tickets and payments are handled by the MGM ticketing server.</p>
+          <Button className="mt-4" icon="refresh" onClick={load}>Try again</Button></div>}
+    </div>
+  );
   return (
     <Ctx.Provider value={store}>
       {children}
