@@ -4,7 +4,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty, Kpi, Td, Th } from "./admin";
 import { HBars } from "./charts";
 import { api } from "./api";
-import { fmtTime, inr } from "./store";
+import { TODAY, fmtTime, inr } from "./store";
+import { csvName, downloadCsv, money2 } from "./csv";
 import { Badge, Button, DateInput, Field, Icon, Modal, Select, Toggle, copyText, inputCls, useStore } from "./ui";
 
 const PLATFORMS = ["Instagram", "YouTube", "Facebook", "X", "TikTok", "Blog", "Other"];
@@ -50,22 +51,31 @@ const money = (n: number) => "₹" + n.toLocaleString("en-IN", { minimumFraction
 const Loading = () => <div className="py-12 text-center text-sm text-slate-500"><div className="mx-auto mb-3 h-8 w-8 rounded-full border-4 border-slate-200 border-t-navy-950 animate-spin" />Loading…</div>;
 const ErrorBox = ({ text, retry }: { text: string; retry?: () => void }) => <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between gap-3"><span className="flex items-center gap-2"><Icon name="alert" size={16} />{text}</span>{retry && <Button size="sm" variant="outline" onClick={retry}>Retry</Button>}</div>;
 
-// ---------- root ----------
+// ---------- pages ----------
+const GeoNote = () => <p className="text-[11px] text-slate-400">Regions are approximate, estimated from the visitor's IP address at their first visit (one lookup per visitor session) — not the customer's address. This product includes GeoLite Data created by MaxMind, available from <a className="underline" href="https://www.maxmind.com" target="_blank" rel="noreferrer">https://www.maxmind.com</a>.</p>;
+const ExportButton = ({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) => <Button size="sm" variant="outline" icon="download" disabled={disabled} onClick={onClick}>Export CSV</Button>;
+
+/** Admin › Regional Sales Analytics: all website and counter sales by region and acquisition channel. */
+export function RegionalAnalytics() {
+  const call = useApi();
+  return <div className="space-y-4"><RegionalDashboard call={call} /><GeoNote /></div>;
+}
+
+/** Admin › Influencer Management: performance, campaigns, directory and commissions. */
 export default function InfluencerModule() {
-  const [tab, setTab] = useState<"regional" | "overview" | "influencers" | "commissions">("regional");
+  const [tab, setTab] = useState<"overview" | "influencers" | "commissions">("overview");
   const call = useApi();
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-1.5">
-        {([["regional", "Regions & channels"], ["overview", "Influencer performance"], ["influencers", "Influencers"], ["commissions", "Commissions"]] as const).map(([k, l]) => (
+        {([["overview", "Performance & campaigns"], ["influencers", "Influencers"], ["commissions", "Commissions"]] as const).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${tab === k ? "bg-navy-950 text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300"}`}>{l}</button>
         ))}
       </div>
-      {tab === "regional" && <RegionalDashboard call={call} />}
       {tab === "overview" && <Overview call={call} />}
       {tab === "influencers" && <InfluencerList call={call} />}
       {tab === "commissions" && <Commissions call={call} />}
-      <p className="text-[11px] text-slate-400">Regions are approximate, estimated from the visitor's IP address at their first visit (one lookup per visitor session) — not the customer's address. This product includes GeoLite Data created by MaxMind, available from <a className="underline" href="https://www.maxmind.com" target="_blank" rel="noreferrer">https://www.maxmind.com</a>.</p>
+      <GeoNote />
     </div>
   );
 }
@@ -86,6 +96,9 @@ function FunnelTable({ rows, first }: { rows: (Funnel & { label: React.ReactNode
       <tbody className="divide-y divide-slate-100">{rows.map((r) => <tr key={r.key}><Td className="font-medium">{r.label}</Td><Td className="text-right tabular-nums">{num(r.sessions)}</Td><Td className="text-right tabular-nums">{num(r.bookings)}</Td><Td className="text-right tabular-nums">{num(r.paid_bookings)}</Td><Td className="text-right tabular-nums">{r.sessions ? pct(r.conversion_rate) : <span className="text-slate-300">—</span>}</Td><Td className="text-right tabular-nums">{num(r.tickets)}</Td><Td className="text-right font-semibold tabular-nums">{inr(r.revenue)}</Td></tr>)}</tbody></table></div>
   );
 }
+
+const FUNNEL_HEADERS = ["Visitor sessions", "Bookings", "Paid bookings", "Conversion (%)", "Tickets", "Revenue (INR, incl. GST)"];
+const funnelCells = (r: Funnel) => [r.sessions, r.bookings, r.paid_bookings, r.sessions ? r.conversion_rate : null, r.tickets, money2(r.revenue)];
 
 function RegionalDashboard({ call }: { call: Call }) {
   const [from, setFrom] = useState(""); const [to, setTo] = useState("");
@@ -117,14 +130,18 @@ function RegionalDashboard({ call }: { call: Call }) {
           <Kpi label="Cancelled / refunded" value={num(data.summary.bookings - data.summary.paid_bookings)} icon="refresh" tone="red" sub="Excluded from paid figures" />
         </div>
         <div className="grid lg:grid-cols-[1fr_360px] gap-5">
-          <Card className="min-w-0" title="Acquisition channels" action={<span className="text-xs text-slate-400">First touch of each visitor session</span>}>
+          <Card className="min-w-0" title="Acquisition channels" action={<ExportButton onClick={() => downloadCsv(csvName("acquisition-channels", from, to, TODAY), ["Channel", ...FUNNEL_HEADERS],
+            data.sources.map((r) => [SOURCE_LABEL[r.source] || r.source, ...funnelCells(r)]))} />}>
             <FunnelTable first="Channel" rows={data.sources.map((r) => ({ ...r, key: r.source, label: SOURCE_LABEL[r.source] || r.source }))} />
           </Card>
           <Card className="min-w-0" title="Revenue by channel">
             {data.summary.revenue ? <HBars data={data.sources.filter((r) => r.revenue > 0).map((r) => ({ label: SOURCE_LABEL[r.source] || r.source, value: r.revenue, sub: `${num(r.paid_bookings)} paid bookings` }))} fmt={inr} /> : <Empty text="No paid website bookings in this period." />}
           </Card>
         </div>
-        <Card title="Regional traffic → booking funnel" action={<div className="w-40"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Region level" options={[{ value: "state", label: "By state" }, { value: "city", label: "By city" }, { value: "country", label: "By country" }]} /></div>}>
+        <Card title="Regional traffic → booking funnel" action={<div className="flex items-center gap-2"><ExportButton onClick={() => downloadCsv(csvName("regional-sales", from, to, TODAY), ["Level", "Country", "State / region", "City", ...FUNNEL_HEADERS], [
+          ...data.countries.map((r) => ["Country", r.country, "", "", ...funnelCells(r)]),
+          ...data.states.map((r) => ["State", "", r.state, "", ...funnelCells(r)]),
+          ...data.cities.map((r) => ["City", "", r.state, r.city, ...funnelCells(r)])])} /><div className="w-40"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Region level" options={[{ value: "state", label: "By state" }, { value: "city", label: "By city" }, { value: "country", label: "By country" }]} /></div></div>}>
           <FunnelTable first={level === "state" ? "State / region" : level === "city" ? "City" : "Country"} rows={regionRows} />
           <p className="mt-3 text-[11px] text-slate-500">Conversion = paid bookings ÷ visitor sessions in the same period and region. A booking can come from a session that started before the period, so short date ranges can over- or under-state it. “Outside India” and “Unknown” are kept as their own rows rather than dropped.</p>
         </Card>
@@ -174,7 +191,9 @@ function Overview({ call }: { call: Call }) {
           <Kpi label="Commission paid" value={money(data.summary.commission_paid)} icon="wallet" tone="green" />
         </div>
 
-        <Card title="Influencer performance" action={<span className="text-xs text-slate-400">Click a row for details</span>}>
+        <Card title="Influencer performance" action={<div className="flex items-center gap-3"><span className="text-xs text-slate-400">Click a row for details</span><ExportButton onClick={() => downloadCsv(csvName("influencer-performance", from, to, TODAY),
+          ["Influencer", "Platform", "Referral code", "Active", "Commission rate (%)", "Clicks", "Sessions", "Attributed bookings", "Paid bookings", "Conversion (%)", "Tickets", "Revenue (INR, incl. GST)", "Commission earned (INR)", "Commission pending (INR)", "Commission approved (INR)", "Commission paid (INR)", "Commission reversed (INR)"],
+          rows.map((i) => [i.name, i.platform, i.referral_code, i.active ? "yes" : "no", i.commission_rate, i.clicks, i.sessions, i.attributed_bookings, i.paid_bookings, i.conversion_rate, i.tickets, money2(i.revenue), money2(i.commission_earned), money2(i.commission_pending), money2(i.commission_approved), money2(i.commission_paid), money2(i.commission_reversed)]))} /></div>}>
           <div className="flex flex-wrap gap-2 mb-3">
             <div className="relative flex-1 min-w-48"><Icon name="search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input className={inputCls + " pl-9"} placeholder="Search name or code…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
             <div className="w-44"><Select value={platform} onChange={setPlatform} ariaLabel="Platform" options={[{ value: "all", label: "All platforms" }, ...PLATFORMS.map((p) => ({ value: p, label: p }))]} /></div>
@@ -210,7 +229,9 @@ function Overview({ call }: { call: Call }) {
           })()}
         </Card>
 
-        <Card title="Campaigns" action={<span className="text-xs text-slate-400">From the campaign= link parameter</span>}>
+        <Card title="Campaigns" action={<div className="flex items-center gap-3"><span className="text-xs text-slate-400">From the campaign= link parameter; “(none)” = no campaign</span><ExportButton onClick={() => downloadCsv(csvName("campaign-performance", from, to, TODAY),
+          ["Campaign", "Influencer", "Clicks", "Sessions", "Attributed bookings", "Paid bookings", "Conversion (%)", "Tickets", "Revenue (INR, incl. GST)", "Commission (INR)"],
+          data.campaigns.map((c) => [c.campaign, c.influencer, c.clicks, c.sessions, c.attributed_bookings, c.paid_bookings, c.conversion_rate, c.tickets, money2(c.revenue), money2(c.commission)]))} /></div>}>
           <CampaignTable rows={data.campaigns} />
         </Card>
       </>)}
@@ -375,6 +396,12 @@ function Commissions({ call }: { call: Call }) {
 
   const act = async (fn: () => Promise<unknown>, msg: string) => { setBusy(true); try { await fn(); toast(msg); reload(); } catch (e) { toast((e as Error).message, "err"); } setBusy(false); };
   const total = (data || []).reduce((s, c) => s + (c.status === "reversed" ? 0 : c.amount), 0);
+  const exportCsv = () => act(async () => {
+    const all = await call<Commission[]>(`/commissions${qs({ status, influencer_id: inf, from, to, limit: 100000 })}`);
+    downloadCsv(csvName(`influencer-commissions${status ? "-" + status : ""}`, from, to, TODAY),
+      ["Booking reference", "Booking status", "Influencer", "Referral code", "Campaign", "Paid at", "Visit date", "Tickets", "Ticket revenue after discounts (INR)", "Add-ons (INR)", "GST (INR)", "Booking total (INR)", "Commission basis", "Basis amount (INR)", "Rate (%)", "Commission (INR)", "Commission status", "Approved at", "Paid out at", "Payout reference", "Reversed at", "Reversal reason", "State", "City"],
+      all.map((c) => [c.booking_ref, c.booking_status, c.influencer, c.referral_code, c.campaign || "(none)", c.paid_at, c.visit_date, c.tickets, money2(c.ticket_net_amount), money2(c.addons_amount), money2(c.tax_amount), money2(c.total_amount), c.basis, money2(c.basis_amount), c.rate, money2(c.amount), c.status, c.approved_at, c.paid_out_at, c.payout_reference, c.reversed_at, c.reversal_reason, c.region.state, c.region.city]));
+  }, "Commissions exported");
 
   return (
     <div className="space-y-4">
@@ -383,6 +410,7 @@ function Commissions({ call }: { call: Call }) {
         <Field label="Paid from"><DateInput value={from} onChange={setFrom} placeholder="Any date" clearable max={to || undefined} /></Field>
         <Field label="Paid to"><DateInput value={to} onChange={setTo} placeholder="Any date" clearable min={from || undefined} /></Field>
         <div className="flex gap-1.5 flex-wrap pb-1.5">{["", "pending", "approved", "paid", "reversed"].map((s) => <button key={s} onClick={() => setStatus(s)} className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize ${status === s ? "bg-navy-950 text-white" : "bg-slate-100 text-slate-600"}`}>{s || "all"}</button>)}</div>
+        <div className="ml-auto pb-1"><ExportButton disabled={busy} onClick={exportCsv} /></div>
       </div>
       <p className="text-xs text-slate-500">Commission = influencer's rate (frozen when the booking was paid) × ticket revenue after discounts, excluding GST and add-ons. “Mark paid” records a settlement made outside this system — no money is transferred from here.</p>
       {error && <ErrorBox text={error} retry={reload} />}

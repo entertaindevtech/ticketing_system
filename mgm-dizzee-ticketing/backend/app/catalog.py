@@ -138,6 +138,8 @@ def upsert_offer(db: Session, dto: dict, ticket_ids: set[str]) -> dict:
     if data["type"] == "percent" and data["value"] > 100:
         raise CatalogError("A percentage cannot exceed 100")
     coupon = str(dto.get("coupon") or "").strip().upper() or None
+    if o and o.data.get("image"):
+        data["image"] = o.data["image"]
     o = o or Offer(id=oid)
     o.coupon, o.status, o.max_redemptions, o.redemptions = coupon, data["status"], maxr, used
     data.pop("redemptions", None)

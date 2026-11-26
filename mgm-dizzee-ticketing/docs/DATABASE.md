@@ -18,6 +18,7 @@ All migrations are additive. Each `downgrade` is exercised by `tests/test_migrat
 | `0005` | `cancellation_requests`, `booking_modifications`, `refunds` | – |
 | `0006` | `gate_scans` | – |
 | `0007` | `users`, `auth_sessions` | none (no default accounts or passwords) |
+| `0008` | `offer_images` (optional offer banner image: type + bytes, one per offer) | – |
 
 Run `python -m alembic upgrade head`; the Dockerfile does this on every deploy. `python -m alembic current` shows the revision.
 

@@ -55,3 +55,17 @@ export const LEGACY_KEY = "mgm-dizzee-proto-v3";
 export function legacyBookings(): unknown[] {
   try { const d = JSON.parse(localStorage.getItem(LEGACY_KEY) || "null"); return Array.isArray(d?.bookings) ? d.bookings.filter((b: { live?: boolean }) => b.live) : []; } catch { return []; }
 }
+
+/** Uploads a file as the raw request body (used for offer images). */
+export async function uploadFile<T = unknown>(path: string, file: Blob): Promise<T> {
+  let r: Response;
+  try {
+    r = await fetch(`${API}${path}`, { method: "PUT", credentials: API ? "include" : "same-origin", body: file,
+      headers: { "X-Requested-With": "mgm-app", "Content-Type": file.type || "application/octet-stream" } });
+  } catch {
+    throw new ApiError(0, "Upload failed: cannot reach the ticketing server.");
+  }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(r.status, typeof (data as { detail?: unknown }).detail === "string" ? (data as { detail: string }).detail : `Upload failed (${r.status})`);
+  return data as T;
+}

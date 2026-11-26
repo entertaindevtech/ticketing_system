@@ -16,6 +16,7 @@ export type Offer = {
   packagePrice: number; packageContents: Record<string, number>;
   maxRedemptions: number; redemptions: number; coupon: string; terms: string; priority: number;
   status: OfferStatus; featured: boolean; requiresId: string;
+  image?: string; // server URL of the optional uploaded banner image (set only by the image upload API)
 };
 export type Addon = { id: string; name: string; description: string; price: number; icon: string; tag?: string };
 export type DateCfg = { enabled?: boolean; blackout?: boolean; capacity?: number; priceAdj?: number; note?: string };

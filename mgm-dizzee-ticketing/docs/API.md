@@ -25,6 +25,7 @@ All endpoints are under `/api` and exchange JSON. The live, interactive schema i
 | `GET /api/health` | Liveness, plus whether the GeoLite database is loaded |
 | `GET /api/catalog` | Ticket categories, add-ons, active non-coupon offers, per-date settings, park settings, and the park's `today` |
 | `GET /api/availability?from&to` | Per date: open or closed with the reason, price adjustment, and remaining capacity (total and per category). Maximum range 92 days |
+| `GET /api/offers/{id}/image` | An offer's uploaded image (cacheable; the URL in the catalog carries a version) |
 | `POST /api/quote` `{visit_date, cart}` | Server-priced lines and totals, validated coupon, date status |
 | `POST /api/visits` | Anonymous visitor session and influencer click capture (influencer handover) |
 
@@ -76,13 +77,14 @@ The `admin` role can call everything. The other roles can call only what this ta
 | `POST /api/admin/refunds/{id}/process` | admin, finance | Mark a pending refund as processed (simulated, counter or legacy providers) |
 | `POST /api/admin/payments/{id}/collect` `{method}` | admin, finance, counter | Record collection of a modification price difference |
 | `PUT /api/admin/ticket-categories/{id}` | admin | Create or update a ticket category. Capacity is synced to inventory and refused below what is already sold |
+| `PUT /api/admin/offers/{id}/image` (raw JPEG/PNG/WebP body, max 2 MB) · `DELETE /api/admin/offers/{id}/image` | admin | Upload, replace or remove an offer's optional image; the type is checked from the file's bytes |
 | `PUT /api/admin/offers/{id}` · `DELETE /api/admin/offers/{id}` | admin | Create or update an offer; delete one only if it was never used |
 | `PUT /api/admin/park-dates/{date}` | admin | Open or close the date, blackout, capacity, price adjustment, note |
 | `PATCH /api/admin/settings` | admin | GST, capacity, cancellation fee and notice, sale window, hold minutes, park details |
 | `POST /api/admin/notifications/{id}/read` · `/read-all` | admin, finance | Notifications inbox |
 | `GET /api/admin/users` · `POST /api/admin/users` · `PATCH /api/admin/users/{code}` | admin | Staff accounts (roles, gate, password reset, deactivate) |
 | `POST /api/admin/legacy-import` `{bookings: [...]}` | admin | Import bookings exported from the retired browser-only version (per-booking result) |
-| `GET /api/admin/influencers…`, `/commissions…`, `/analytics`, `/regional` | admin, marketing | Influencer and regional intelligence (influencer handover §8). `/regional` now includes counter sales as the `counter` channel |
+| `GET /api/admin/influencers…`, `/commissions…` (`limit` up to 100,000 for complete exports), `/analytics`, `/regional` | admin, marketing | Influencer and regional intelligence (influencer handover §8). `/regional` now includes counter sales as the `counter` channel |
 
 ## Retired
 

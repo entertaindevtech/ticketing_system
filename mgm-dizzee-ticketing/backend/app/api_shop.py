@@ -1,7 +1,7 @@
 """Public catalog, availability and quote API (no customer data here)."""
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -51,6 +51,16 @@ def quote(db: Session, s, visit_date: str, cart: dict, booked_on: str | None = N
 def quote_out(ctx: dict, priced: dict, status: dict) -> dict:
     coupon = next((o for o in ctx["offers"] if o["id"] == priced["couponOfferId"]), None)
     return {**priced, "couponOffer": coupon, "dateStatus": status}
+
+
+@shop.get("/offers/{offer_id}/image")
+def offer_image(offer_id: str, db: Session = Depends(get_db)):
+    from .models import OfferImage
+    img = db.get(OfferImage, offer_id)
+    if not img:
+        raise HTTPException(404, "No image")
+    # the URL carries a version (?v=), so a replaced image gets a new URL and long caching is safe
+    return Response(img.data, media_type=img.content_type, headers={"Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff"})
 
 
 @shop.get("/catalog")

@@ -98,7 +98,7 @@ Create everyone else in the browser: **Admin › Staff Management › Add staff*
 | `finance` | bookings, payments and refunds, reports |
 | `counter` | walk-in sales |
 | `gate` | the scanner at `/#staff` |
-| `marketing` | Influencers & Regions |
+| `marketing` | Regional Sales Analytics, Influencer Management |
 
 Do **not** use `railway run ...` for these commands: it runs on your own computer, not in Railway.
 
@@ -125,7 +125,7 @@ The catalog (tickets, prices, offers, calendar) is created automatically by the 
    - the Dashboard shows the booking, and "Admitted today" shows 1;
    - **Booking Management** lists the booking;
    - **Counter Sale** completes a walk-in sale.
-4. **Influencers & Regions › Regions & channels** shows the website bookings, with counter sales as the "Counter (walk-in)" channel.
+4. **Regional Sales Analytics** shows the website bookings, with counter sales as the "Counter (walk-in)" channel.
 
 ## 9. Known staging limitations
 

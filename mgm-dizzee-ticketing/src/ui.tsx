@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DB, setToday } from "./store";
-import { api } from "./api";
+import { API, api } from "./api";
 import { qrSvgPath } from "./qr";
 import logoUrl from "./assets/logo.png";
 
@@ -279,7 +279,7 @@ export const THEMES: Record<string, { bg: string; label: string; ink: string }> 
   night: { bg: "linear-gradient(135deg,#2A2926 0%,#111111 100%)", label: "Night", ink: "#F6CD45" },
   gold: { bg: "linear-gradient(135deg,#F9DB73 0%,#E9B825 100%)", label: "MGM Yellow", ink: "#1C1B19" },
 };
-export function OfferArt({ theme, type, className = "" }: { theme: string; type: string; className?: string }) {
+export function OfferArt({ theme, type, image, className = "" }: { theme: string; type: string; image?: string; className?: string }) {
   const t = THEMES[theme] || THEMES.sunset;
   const icon = type === "bxgy" ? "gift" : type === "package" ? "users" : type === "flat" ? "tag" : "percent";
   return (
@@ -290,6 +290,7 @@ export function OfferArt({ theme, type, className = "" }: { theme: string; type:
         <path d="M0 90 Q 30 40 60 70 T 120 60 T 200 80" fill="none" stroke="#fff" strokeWidth="3" />
         <circle cx="25" cy="25" r="3" fill="#fff" /><circle cx="60" cy="15" r="2" fill="#fff" /><circle cx="110" cy="30" r="2.5" fill="#fff" />
       </svg>
+      {image && <img src={image.startsWith("/") ? API + image : image} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />}
       <div className="absolute left-3 bottom-3 grid h-11 w-11 place-items-center rounded-2xl bg-white/20 backdrop-blur" style={{ color: t.ink }}><Icon name={icon} size={22} /></div>
     </div>
   );
