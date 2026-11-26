@@ -37,6 +37,31 @@ def parse_qr(secret: str, raw: str) -> tuple[str | None, str | None, str]:
     return None, None, "Invalid QR code"
 
 
+def booking_qr_payload(secret: str, booking_ref: str, visit_date: str) -> str:
+    """Group-entry QR for a whole booking (Model A). Separate prefix and MAC domain from ticket QRs, so neither can
+    be passed off as the other."""
+    base = f"MGMBK1|{booking_ref}|{visit_date}"
+    return f"{base}|{base64.b32encode(_mac(secret, 'bqr|' + base)).decode()[:12]}"
+
+
+def parse_booking_qr(secret: str, raw: str) -> tuple[str | None, str | None, str]:
+    """-> (booking_ref, signed_visit_date, error). Accepts a signed MGMBK1 payload or a booking reference typed by staff."""
+    code = raw.strip()
+    if code.startswith("MGMBK1|"):
+        parts = code.split("|")
+        if len(parts) != 4 or not hmac.compare_digest(booking_qr_payload(secret, parts[1], parts[2]), code):
+            return None, None, "Invalid QR code – signature check failed"
+        return parts[1], parts[2], ""
+    if code.upper().startswith("MGM-") and 6 <= len(code) <= 16 and code.replace("-", "").isalnum():
+        return code.upper(), None, ""
+    return None, None, "Invalid QR code"
+
+
+def is_booking_code(raw: str) -> bool:
+    c = raw.strip().upper()
+    return c.startswith("MGMBK1|") or (c.startswith("MGM-") and not c.startswith("MGMDW"))
+
+
 def access_token(secret: str, booking_ref: str) -> str:
     """Customer access token for one booking. Derived, so it can be re-sent without storing it."""
     return base64.urlsafe_b64encode(_mac(secret, "access|" + booking_ref)).decode().rstrip("=")[:32]

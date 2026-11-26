@@ -414,7 +414,7 @@ export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNe
         <WeekStrip date={date} setDate={(d) => { setDate(d); toast(`Date changed to ${fmtShort(d)} · offers updated`); }} />
       </div>
 
-      <div className="grid lg:grid-cols-[1fr_360px] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
         <div className="space-y-5">
           <Collapse title="Regular tickets" icon="ticket" count={`${db.tickets.filter((t) => t.active).length} ticket types · prices for ${fmtShort(date)}`} open={openReg} onToggle={() => setOpenReg(!openReg)}>
             {db.tickets.filter((t) => t.active).map((t) => {
@@ -582,7 +582,7 @@ export function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { ca
   const skip = () => { setCart((c) => ({ ...c, addons: {} })); onNext(); };
   const art: Record<string, string> = { food: "from-orange-400 to-mgm-red", locker: "from-slate-500 to-navy-950", swim: "from-sky-400 to-blue-700", vr: "from-violet-500 to-fuchsia-700", camera: "from-amber-300 to-orange-500", cabana: "from-emerald-400 to-teal-700" };
   return (
-    <div className="grid lg:grid-cols-[1fr_360px] gap-6 fade-in">
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6 fade-in">
       <div>
         <div className="flex flex-wrap items-center gap-2"><h2 className="font-display text-2xl font-bold text-navy-950">Make it a perfect day</h2><Badge tone="slate">Optional</Badge></div>
         <p className="text-sm text-slate-500 mb-5">Add-ons are extras. You can continue without them — your tickets are already in your booking.</p>
@@ -608,9 +608,9 @@ export function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { ca
             );
           })}
         </div>
-        <div className="mt-6 flex justify-between items-center gap-2"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button variant="outline" onClick={skip}>Skip add-ons</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="hidden lg:inline-flex">Continue</Button></div>
+        <div className="mt-6 flex flex-wrap justify-between items-center gap-2"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button variant="outline" onClick={skip}>Skip add-ons</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="max-lg:hidden">Continue</Button></div>
       </div>
-      <SideSummary date={date} priced={priced}><Button size="lg" className="w-full mt-4 hidden lg:flex" onClick={onNext} iconRight="arrow">Continue to Details</Button></SideSummary>
+      <SideSummary date={date} priced={priced}><Button size="lg" className="w-full mt-4 max-lg:hidden" onClick={onNext} iconRight="arrow">Continue to Details</Button></SideSummary>
       <MobileBar priced={priced} label="Continue" disabled={false} onNext={onNext} />
     </div>
   );
@@ -632,7 +632,7 @@ function DetailsStep({ date, priced, customer, setCustomer, onBack, onNext }: { 
   const set = (k: string, v: string | number) => setCustomer({ ...c, [k]: v });
   const needsId = priced.lines.some((l) => l.kind === "offer" && db.offers.find((o) => o.id === l.refId)?.requiresId);
   return (
-    <div className="grid lg:grid-cols-[1fr_380px] gap-6 fade-in">
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-6 fade-in">
       <div className="space-y-5">
         <div className="card p-5 sm:p-6">
           <h2 className="font-display text-2xl font-bold text-navy-950">Your details</h2>
@@ -897,8 +897,19 @@ function Confirmation({ booking, access, onHome, homeLabel = "Return to homepage
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[1fr_320px] gap-6 mt-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 mt-6">
         <div>
+          {live.entryQr && live.status !== "cancelled" && (
+            <div className="card p-4 sm:p-5 mb-6 flex flex-col sm:flex-row items-center gap-4 sm:gap-5">
+              <div className="rounded-2xl border border-slate-200 p-2 bg-white shrink-0"><QR text={live.entryQr} size={168} /></div>
+              <div className="min-w-0 text-center sm:text-left">
+                <Badge tone="yellow">Group entry</Badge>
+                <h2 className="mt-2 font-display text-xl font-bold text-navy-950">One QR for all {live.tickets.length} {live.tickets.length === 1 ? "entry" : "entries"}</h2>
+                <p className="mt-1 text-sm text-slate-600">Show this at the gate. Staff can let your whole group in at once, or some now and the rest later. The individual ticket QRs below also work.</p>
+                <div className="mt-2 font-mono text-xs font-bold text-navy-900">{live.id}</div>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between mb-3"><h2 className="font-display text-xl font-bold text-navy-950">Your e-tickets</h2><span className="text-sm text-slate-500">{live.tickets.length} QR tickets</span></div>
           <div className="grid sm:grid-cols-2 gap-4 stagger">
             {live.tickets.map((t, i) => (

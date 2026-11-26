@@ -53,7 +53,7 @@ export default function CounterSale() {
       {step === "tickets" && date && priced && <TicketsStep date={date} setDate={setDate} cart={cart} setCart={setCart} priced={priced} onBack={() => setStep("date")} onNext={() => setStep("addons")} />}
       {step === "addons" && date && priced && <AddonsStep cart={cart} setCart={setCart} priced={priced} date={date} onBack={() => setStep("tickets")} onNext={() => setStep("checkout")} />}
       {step === "checkout" && date && priced && (
-        <div className="grid lg:grid-cols-[1fr_340px] gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5">
           <div className="card-flat p-5 space-y-3">
             <h3 className="font-display text-lg font-bold text-navy-950">Customer details</h3>
             <Field label="Full name"><input className={inputCls} value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Walk-in guest" /></Field>

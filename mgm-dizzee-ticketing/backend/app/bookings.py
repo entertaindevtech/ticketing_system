@@ -304,6 +304,8 @@ def booking_dto(db: Session, cfg: Settings, b: Booking, *, with_qr: bool = True)
         "tickets": [{"id": t.code, "catId": t.category_id, "label": t.label, "status": TICKET_STATUS[t.status], "scannedAt": ist(t.used_at) or None,
                      "gate": t.used_gate, "offerId": t.offer_id, "complimentary": t.complimentary,
                      "qr": security.qr_payload(cfg.app_secret, t.code, b.ref, b.visit_date.isoformat()) if with_qr else None} for t in b.tickets],
+        # One QR for the whole group (gate group admission); the per-ticket QRs above keep working too.
+        "entryQr": security.booking_qr_payload(cfg.app_secret, b.ref, b.visit_date.isoformat()) if with_qr else None,
         "live": True, "counterSale": b.channel == "counter", "modifiedAt": ist(b.modified_at) or None,
     }
     from . import lifecycle  # refund / modification history (milestone C)
