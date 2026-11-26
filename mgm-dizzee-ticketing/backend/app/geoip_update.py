@@ -16,7 +16,9 @@ import os
 import tarfile
 import threading
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 log = logging.getLogger("mgm.geoip_update")
 URL = "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
@@ -38,7 +40,10 @@ def refresh(path: str, max_age_days: float = 7) -> bool:
     if not creds:
         log.warning("MAXMIND_ACCOUNT_ID / MAXMIND_LICENSE_KEY not set - GeoLite2 not downloaded; regions will show as Unknown")
         return False
-    req = urllib.request.Request(URL, headers={"Authorization": "Basic " + base64.b64encode(f"{creds[0]}:{creds[1]}".encode()).decode()})
+    req = urllib.request.Request(URL)
+    # MaxMind answers with a 302 to a presigned Cloudflare R2 URL, which rejects requests that also carry an
+    # Authorization header (HTTP 400). An "unredirected" header is sent to MaxMind only, never to the redirect.
+    req.add_unredirected_header("Authorization", "Basic " + base64.b64encode(f"{creds[0]}:{creds[1]}".encode()).decode())
     tmp = path + ".tmp"
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -55,15 +60,26 @@ def refresh(path: str, max_age_days: float = 7) -> bool:
 
         maxminddb.open_database(tmp).close()  # validate before swapping in
         os.replace(tmp, path)
+    except urllib.error.HTTPError as e:
+        # Report which host answered and a short excerpt of its error body (no URL query, no credentials).
+        body = " ".join(e.read(500).decode("utf-8", "replace").split()) if e.fp else ""
+        log.error("GeoLite2 download failed: HTTP %s from %s: %s; keeping the existing database",
+                  e.code, urlsplit(e.url or URL).hostname, body[:300])
+        _cleanup(tmp)
+        return False
     except Exception:
         log.exception("GeoLite2 download failed; keeping the existing database")
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        _cleanup(tmp)
         return False
     log.info("GeoLite2 City database updated at %s (%d KiB)", path, len(data) // 1024)
     return True
+
+
+def _cleanup(tmp: str) -> None:
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
 
 
 def start_background_refresh(path: str, interval_hours: float = 24) -> None:
