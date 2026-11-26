@@ -99,9 +99,9 @@ def test_unknown_and_foreign_locations_are_bucketed(client):
     assert states == {"Tamil Nadu": 1, "Unknown": 2, "Outside India": 1}
 
 
-def test_client_ip_trusts_only_proxy_hops():
-    assert client_ip("1.2.3.4, 49.36.10.10", "10.0.0.1", 1) == "49.36.10.10"  # spoofed left entry ignored
-    assert client_ip(None, "49.36.10.10", 0) == "49.36.10.10"
+def test_client_ip_uses_real_ip_behind_proxy_and_peer_locally():
+    assert client_ip("49.36.10.10", "10.0.0.1", 1) == "49.36.10.10"
+    assert client_ip(None, "49.36.10.10", 0) == "49.36.10.10"  # local development: socket peer
     assert client_ip("10.1.1.1", "10.0.0.1", 1) is None  # private address -> no lookup
     assert client_ip("not-an-ip", None, 1) is None
     assert client_ip("::ffff:49.36.10.10", None, 1) == "49.36.10.10"

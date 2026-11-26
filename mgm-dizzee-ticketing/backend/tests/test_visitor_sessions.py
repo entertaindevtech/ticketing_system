@@ -92,7 +92,7 @@ def test_bots_are_not_tracked(client, db):
 
 
 def test_untrusted_ip_header_gives_unknown_region_not_spoofed_one(client, db, app):
-    r = client.post("/api/visits", json={}, headers={"X-Forwarded-For": "not-an-ip"}).json()
+    r = client.post("/api/visits", json={}, headers={"X-Real-IP": "not-an-ip"}).json()
     s = session_of(db, r["session_token"])
     assert r["tracked"] and s.geo_country_code is None and app.state.geo.calls == [None]
 

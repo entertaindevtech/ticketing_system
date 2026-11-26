@@ -229,7 +229,7 @@ Since §0, every website booking is sent; only bookings with a live influencer a
 ## 5. GeoIP lookup lifecycle
 
 - **When:** only when a visitor session is created, for any visitor (§0). It never runs on page views, and it never blocks booking.
-- **IP source:** `X-Forwarded-For`. The server trusts only the last `TRUSTED_PROXY_HOPS` entries (default 1 = the Railway edge). Entries further left are client-supplied and ignored, which prevents location spoofing. Private and reserved addresses are not looked up. **Check after the first Railway deploy:** click a referral link from a known location and confirm the region. If everything shows Unknown, adjust `TRUSTED_PROXY_HOPS`.
+- **IP source:** `X-Real-IP`, which Railway's edge sets to the visitor's address (Railway docs: public networking, request headers). `X-Forwarded-For` is never read: Railway doesn't document its layout, and its entries can be internal hops, edge nodes or client-forged values. With `TRUSTED_PROXY_HOPS=0` (local development, no proxy) the socket peer is used instead. Private, reserved, loopback, CGNAT and malformed addresses are not looked up. **Check after deploy:** open the site in a new incognito window from a known location and confirm the region of the newest `visitor_sessions` row.
 - **Raw IPs are never stored and never shown.** Only country code and name, state/region and city are kept.
 - **Database:** MaxMind **GeoLite2 City (global)** MMDB, read with `maxminddb`, at `GEOIP_DB_PATH`.
 - **Provisioning and refresh:**
@@ -317,7 +317,7 @@ See `backend/.env.example`.
 | `PUBLIC_APP_URL` | yes | public origin used to build referral URLs, e.g. `https://book.mgmdizzeeworld.com` |
 | `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY` | for regions | free GeoLite account |
 | `GEOIP_DB_PATH` | – | default `/data/GeoLite2-City.mmdb` in the Docker image (put the volume at `/data`) |
-| `TRUSTED_PROXY_HOPS` | – | default `1` (Railway edge) |
+| `TRUSTED_PROXY_HOPS` | – | default `1`: behind Railway's edge, read the visitor IP from `X-Real-IP`. `0`: no proxy (local), use the socket peer |
 | `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `first_click` / `30` |
 | `COMMISSION_BASIS` | – | `ticket_net_ex_gst` (default) or `total_ex_gst` |
 | `BOOKING_EVENTS_TOKEN` | – | set only once events come from a server (§12) |
@@ -364,7 +364,7 @@ The full browser regression run for the consolidated app is in §11a.
 **Original automated suite:** it covers:
 - referral code validation and inactive influencers;
 - click recording; first-click retention; expiry after 30 days; one GeoIP lookup per session;
-- Unknown, partial and Outside-India buckets; spoofed `X-Forwarded-For`; private IPs; missing or corrupt MMDB;
+- Unknown, partial and Outside-India buckets; spoofed / misleading `X-Forwarded-For` (ignored); private IPs; missing or corrupt MMDB;
 - attribution on payment; commission basis with discounts; failed and pending payments;
 - duplicate payment callbacks; attempts to re-attribute after booking; rate-change snapshots;
 - cancellation reversal with history; modification before and after approval; the approve/pay transition rules;

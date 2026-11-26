@@ -37,7 +37,7 @@ Open the app service, then **Variables**, and add these:
 | `APP_SECRET` | the 48-character value from step 1 |
 | `PUBLIC_APP_URL` | `https://<your-domain>`, filled in at step 4 |
 | `SIMULATED_PAYMENTS` | `1` |
-| `TRUSTED_PROXY_HOPS` | `1` |
+| `TRUSTED_PROXY_HOPS` | `1` (visitor IP read from Railway's `X-Real-IP`; `0` would make every region Unknown) |
 
 **Do not set:**
 - `PORT` (Railway sets it);

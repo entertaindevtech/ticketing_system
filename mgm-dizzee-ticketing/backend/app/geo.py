@@ -16,17 +16,16 @@ UNKNOWN = "Unknown"
 OUTSIDE_INDIA = "Outside India"
 
 
-def client_ip(xff: str | None, peer: str | None, trusted_hops: int) -> str | None:
-    """Return the client's public IP, trusting only the last `trusted_hops` proxies.
+def client_ip(real_ip: str | None, peer: str | None, trusted_hops: int) -> str | None:
+    """Return the visitor's public IP, or None when it can't be trusted (the region then shows as Unknown).
 
-    Each trusted proxy appends the address it received the request from, so the client is
-    the entry `trusted_hops` from the right. Anything further left is client-supplied and
-    ignored, which stops visitors spoofing their location by sending their own header.
+    Behind Railway's edge (trusted_hops >= 1) the only source is X-Real-IP, which Railway documents as the
+    client's remote IP and sets itself. X-Forwarded-For is never read: Railway doesn't document its layout and
+    any entry of it could be an internal hop, an edge node or a value the visitor typed. With trusted_hops = 0
+    (local development, no proxy) the socket peer address is used.
+    Private, reserved, loopback, CGNAT and malformed addresses are rejected rather than looked up.
     """
-    candidate = peer
-    if trusted_hops > 0 and xff:
-        parts = [p.strip() for p in xff.split(",") if p.strip()]
-        candidate = parts[-trusted_hops] if len(parts) >= trusted_hops else None
+    candidate = real_ip if trusted_hops > 0 else peer
     try:
         ip = ipaddress.ip_address((candidate or "").strip())
     except ValueError:

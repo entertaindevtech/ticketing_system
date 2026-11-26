@@ -25,7 +25,8 @@ class Settings:
     # total_ex_gst      = everything the customer paid except GST (tickets + add-ons)
     commission_basis: str = field(default_factory=lambda: os.environ.get("COMMISSION_BASIS", "ticket_net_ex_gst"))
     geoip_db_path: str = field(default_factory=lambda: os.environ.get("GEOIP_DB_PATH", "./data/GeoLite2-City.mmdb"))
-    # Number of trusted reverse proxies in front of the app (Railway edge = 1). 0 = use the socket peer address.
+    # 1 (default) = behind Railway's edge: the visitor IP is read from X-Real-IP only. 0 = no proxy (local
+    # development): the socket peer address is used.
     trusted_proxy_hops: int = field(default_factory=lambda: _int("TRUSTED_PROXY_HOPS", 1))
     cors_origins: list[str] = field(default_factory=lambda: [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()])
     frontend_dist: str = field(default_factory=lambda: os.environ.get("FRONTEND_DIST", "../dist"))

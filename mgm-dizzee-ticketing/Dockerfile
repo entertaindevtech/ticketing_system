@@ -17,5 +17,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
 COPY --from=web /app/dist /app/dist
 # Migrations run on every deploy (idempotent); then a single uvicorn worker (see handover doc for scaling).
-# Client IPs are read from X-Forwarded-For by app/geo.py using TRUSTED_PROXY_HOPS, so uvicorn must not rewrite them.
+# Client IPs are read from Railway's X-Real-IP by app/geo.py (TRUSTED_PROXY_HOPS=1), so uvicorn must not rewrite them.
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-proxy-headers"]
