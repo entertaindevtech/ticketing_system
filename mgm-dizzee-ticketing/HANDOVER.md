@@ -110,7 +110,7 @@ Scaling: the engine is safe with several workers or replicas, because all coordi
 | `ADMIN_API_TOKEN` | – | unset | Break-glass credential acting as admin (header `X-Admin-Token`). A short or placeholder value disables it. |
 | `ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`, `MAX_BOOKINGS_PER_SESSION`, `VISITOR_SESSION_DAYS`, `COMMISSION_BASIS` | – | `first_click`, 30, 5, 30, `ticket_net_ex_gst` | Influencer attribution (influencer handover §9). |
 | `GEOIP_DB_PATH`, `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY` | – | `./data/GeoLite2-City.mmdb` | Approximate visitor region. Without them every region shows Unknown. |
-| `TRUSTED_PROXY_HOPS` | – | `1` | Reverse proxies in front of the app (Railway edge = 1). |
+| `TRUSTED_PROXY_HOPS` | – | `1` | `1` = behind Railway's edge: the visitor IP comes from `X-Real-IP` only. `0` = no proxy (local development): the socket peer address is used. |
 | `CORS_ORIGINS` | – | unset | Only if the front-end is served from another origin. Credentials are allowed for the listed origins. |
 | `FRONTEND_DIST` | – | `../dist` | Where the built front-end is (the Dockerfile sets `/app/dist`). |
 | `TEST_DATABASE_URL` | tests only | unset | Disposable PostgreSQL for the test suite. **The tests drop every table.** Locally it is read from the git-ignored `backend/.env.test`. |

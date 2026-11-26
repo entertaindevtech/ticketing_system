@@ -90,7 +90,7 @@ def click(client, code="RAHUL01", ip="49.36.10.10", token=None, campaign=None):
 
 def visit(client, ip="49.36.10.10", token=None, referrer=None, **params):
     """A page load as the front-end reports it (src/referral.ts captureVisit)."""
-    return client.post("/api/visits", json={"session_token": token, "referrer": referrer, **params}, headers={"X-Forwarded-For": ip})
+    return client.post("/api/visits", json={"session_token": token, "referrer": referrer, **params}, headers={"X-Real-IP": ip})
 
 
 class Result:

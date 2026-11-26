@@ -63,7 +63,7 @@ def visit(body: VisitIn, request: Request, db: Session = Depends(get_db)):
     if not ua or any(h in ua for h in BOT_HINTS):
         return {"session_token": None, "tracked": False}
     s = request.app.state.settings
-    ip = client_ip(request.headers.get("x-forwarded-for"), request.client.host if request.client else None, s.trusted_proxy_hops)
+    ip = client_ip(request.headers.get("x-real-ip"), request.client.host if request.client else None, s.trusted_proxy_hops)
     own = {h for h in (urlsplit(s.public_app_url).hostname, request.url.hostname) if h}
     r = services.record_visit(
         db, s, request.app.state.geo, existing_token=body.session_token, ip=ip, ref=body.ref, campaign=body.campaign,
