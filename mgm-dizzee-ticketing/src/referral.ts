@@ -8,8 +8,16 @@ const TRACKING = ["ref", "campaign", "utm_source", "utm_medium", "utm_campaign",
 
 type VisitorSession = { token: string; expiresAt: string };
 
-const read = <T,>(k: string, fallback: T): T => { try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
-const write = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } };
+// First-party localStorage only (no cookies, no third parties). Where it is blocked (some private modes, strict
+// settings) the session lives in memory for this page, so a landing with ?ref= and a booking made without reloading
+// are still linked; it is simply not remembered after the tab closes.
+const memory = new Map<string, string>();
+const read = <T,>(k: string, fallback: T): T => {
+  let s: string | null | undefined;
+  try { s = localStorage.getItem(k); } catch { s = memory.get(k); } // memory only when storage is blocked, never after a clear
+  try { return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; }
+};
+const write = (k: string, v: unknown) => { const s = JSON.stringify(v); memory.set(k, s); try { localStorage.setItem(k, s); } catch { /* storage unavailable */ } };
 
 /** Opaque token of this browser's live visitor session, if any. No fingerprinting: only this random token. */
 export function visitorToken(): string | null {
@@ -17,7 +25,10 @@ export function visitorToken(): string | null {
   return s && new Date(s.expiresAt) > new Date() ? s.token : null;
 }
 
-/** On page load: establishes the visitor session (first visit), or records an influencer click (?ref=). */
+/** On page load: establishes the visitor session (first visit), or records an influencer click (?ref=). Every
+ *  landing with ?ref= is sent, even with an existing session: the server makes it the active referral for bookings
+ *  created after it. A direct visit (no ?ref=) sends nothing and so never clears an active referral; it lapses at
+ *  the end of its attribution window. */
 export async function captureVisit() {
   const url = new URL(window.location.href);
   const p = Object.fromEntries(TRACKING.map((k) => [k, url.searchParams.get(k)]));
