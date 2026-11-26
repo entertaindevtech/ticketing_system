@@ -1,5 +1,7 @@
 # Influencer & Regional Sales Intelligence — Technical Handover
 
+> **Channel rule (26 Nov 2026).** In Regions & channels a booking is in the *Influencer referral* channel exactly when it carries an influencer attribution (and so a commission), the same record Influencer Performance counts; otherwise it uses the visitor's first-touch source. A visitor who arrived directly and later followed an influencer link is therefore counted under Influencer referral, not Direct. Sessions follow the same rule. The stored first-touch `source` is unchanged. A booking from an influencer-link visit that earned no commission (per-session cap) is shown as *Influencer link · no commission*.
+
 > **Update (centralized booking engine).** Bookings are no longer reported by the browser: `/api/booking-events/*` is retired (410). The booking engine records attribution, commissions, reversals and re-pricing in the same transaction as payment, cancellation and modification, so the tampering risk in §12 no longer applies to new bookings. Counter sales are included in regional reporting as the `counter` channel and are never attributed. The influencer screens now use staff sign-in (admin or marketing role) instead of a pasted token. See [HANDOVER.md](HANDOVER.md).
 
 *Updated 25 Nov 2026: regional intelligence now covers all visitors and bookings (§0).*

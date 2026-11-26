@@ -158,14 +158,19 @@ def compute_regional(db: Session, start: date | None = None, end: date | None = 
     """
     lo, hi = _range(start, end)
     paid = BA.status == "paid"
-    sess_rows = db.execute(select(VS.source, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city, func.count())
+    # Channel = recorded influencer attribution first (the same fact commissions and Influencer Performance use),
+    # otherwise the first-touch source. A booking from an influencer-link visit that earned no commission (e.g. the
+    # per-session cap) is reported as influencer_uncredited, so the influencer channel equals attributed bookings.
+    s_chan = case((VS.influencer_id.is_not(None), "influencer"), else_=VS.source)
+    b_chan = case((BA.influencer_id.is_not(None), "influencer"), (BA.source == "influencer", "influencer_uncredited"), else_=BA.source)
+    sess_rows = db.execute(select(s_chan, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city, func.count())
                            .where(*_within(VS.created_at, lo, hi))
-                           .group_by(VS.source, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city)).all()
+                           .group_by(s_chan, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city)).all()
     book_rows = db.execute(select(
-        BA.source, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city, func.count(BA.id),
+        b_chan, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city, func.count(BA.id),
         func.sum(case((paid, 1), else_=0)), func.coalesce(func.sum(case((paid, BA.tickets), else_=0)), 0),
         func.coalesce(func.sum(case((paid, BA.total_amount), else_=0)), 0),
-    ).where(*_within(BA.paid_at, lo, hi)).group_by(BA.source, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city)).all()
+    ).where(*_within(BA.paid_at, lo, hi)).group_by(b_chan, BA.channel, BA.geo_country_code, BA.geo_country, BA.geo_region, BA.geo_city)).all()
 
     blank = lambda: {"sessions": 0, "bookings": 0, "paid_bookings": 0, "tickets": 0, "revenue": ZERO}  # noqa: E731
     dims = {"sources": defaultdict(blank), "countries": defaultdict(blank), "states": defaultdict(blank), "cities": defaultdict(blank)}
