@@ -86,6 +86,7 @@ def delete_offer(offer_id: str, db: Session = Depends(get_db), a: Actor = Depend
     img = db.get(OfferImage, offer_id)
     if img:
         db.delete(img)
+        db.flush()  # the image row must be gone before the offer it references (FK enforced on PostgreSQL)
     db.delete(o)
     bookings.audit(db, a.code, "offer", offer_id, f'Offer "{o.data.get("name")}" deleted')
     db.commit()
