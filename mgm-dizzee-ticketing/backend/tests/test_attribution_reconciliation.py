@@ -89,16 +89,17 @@ def test_same_period_filters_apply_identically_to_both_reports(client):
         assert_reconciled(perf, ch)
 
 
-def test_influencer_link_booking_without_commission_is_not_counted_as_attributed(client, db):
-    """A visitor who arrived by influencer link but whose booking earned no commission (per-session cap) is not
-    an attributed booking; it is reported separately instead of inflating the influencer channel."""
+def test_bookings_over_the_commission_cap_stay_attributed_in_both_reports(client, db):
+    """The per-session commission cap limits commission only: the sixth paid booking from one referral session is
+    still the influencer's booking in Influencer Performance and in the influencer channel."""
     make_influencer(client, code="CAP001")
     tok = click(client, code="CAP001").json()["session_token"]
     for i in range(6):
         pay(client, f"CAP-{i}", tok)
     perf, _, ch = reports(client)
-    assert perf["summary"]["paid_bookings"] == ch["influencer"]["paid_bookings"] == 5
-    assert ch["influencer_uncredited"]["paid_bookings"] == 1
+    assert perf["summary"]["paid_bookings"] == ch["influencer"]["paid_bookings"] == 6
+    assert "influencer_uncredited" not in ch
+    assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 5
     assert_reconciled(perf, ch)
 
 

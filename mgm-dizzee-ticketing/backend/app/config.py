@@ -16,7 +16,9 @@ class Settings:
     # Public URL customers land on; referral URLs are built from it (e.g. https://book.example.com).
     public_app_url: str = field(default_factory=lambda: os.environ.get("PUBLIC_APP_URL", "http://localhost:8000").rstrip("/"))
     admin_api_token: str = field(default_factory=lambda: os.environ.get("ADMIN_API_TOKEN", ""))
-    attribution_model: str = field(default_factory=lambda: os.environ.get("ATTRIBUTION_MODEL", "first_click"))
+    # last_click: every valid referral landing becomes the active referral for later bookings. first_click (opt-in) keeps
+    # the first live influencer for the window.
+    attribution_model: str = field(default_factory=lambda: os.environ.get("ATTRIBUTION_MODEL", "last_click"))
     attribution_window_days: int = field(default_factory=lambda: _int("ATTRIBUTION_WINDOW_DAYS", 30))
     max_bookings_per_session: int = field(default_factory=lambda: _int("MAX_BOOKINGS_PER_SESSION", 5))
     # lifetime of an anonymous visitor session (re-created after this; extended while an influencer attribution is live)
