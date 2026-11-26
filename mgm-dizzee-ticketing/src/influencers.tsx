@@ -77,7 +77,7 @@ type Regional = {
   sources: (Funnel & { source: string })[]; countries: (Funnel & { country: string })[];
   states: (Funnel & { state: string })[]; cities: (Funnel & { city: string; state: string })[]; geoip_available: boolean;
 };
-const SOURCE_LABEL: Record<string, string> = { influencer: "Influencer referral", direct: "Direct", organic: "Organic search", paid: "Paid / tagged campaign", social: "Social", referral: "External referral", unknown: "Unknown (no session)", counter: "Counter (walk-in)" };
+const SOURCE_LABEL: Record<string, string> = { influencer: "Influencer referral", direct: "Direct", organic: "Organic search", paid: "Paid / tagged campaign", social: "Social", referral: "External referral", unknown: "Unknown (no session)", counter: "Counter (walk-in)", influencer_uncredited: "Influencer link · no commission" };
 
 function FunnelTable({ rows, first }: { rows: (Funnel & { label: React.ReactNode; key: string })[]; first: string }) {
   if (!rows.length) return <Empty text="No visitor sessions or bookings in this period." />;
@@ -257,23 +257,58 @@ function InfluencerDetail({ call, perf, from, to, onClose }: { call: Call; perf:
 // ---------- influencer management ----------
 const blank = { name: "", platform: "Instagram", referral_code: "", commission_rate: "", handle: "", email: "", phone: "", notes: "", active: true };
 type Form = typeof blank;
+// Same rules as the server (backend/app/services.py CODE_RE, api.py EMAIL_RE / PHONE_RE); the server re-checks.
+const CODE_RE = /^[A-Z0-9_-]{3,32}$/;
+const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,}$/;
+const PHONE_RE = /^\+?[0-9 ()-]{7,20}$/;
+const HANDLE_HINT: Record<string, string> = {
+  Instagram: "@handle or instagram.com/handle", YouTube: "@channel or youtube.com/@channel", Facebook: "facebook.com/page",
+  X: "@handle or x.com/handle", TikTok: "@handle or tiktok.com/@handle", Blog: "https://blog.example.com", Other: "Profile link or handle",
+};
+/** Suggested code: letters of the name + 2 digits, not already taken. Editable before saving. */
+function suggestCode(name: string, taken: Set<string>) {
+  const stem = (name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8) || "MGM").padEnd(3, "X");
+  for (let i = 0; i < 200; i++) { const c = stem + String(Math.floor(10 + Math.random() * 90)); if (!taken.has(c)) return c; }
+  return stem + Date.now().toString(36).toUpperCase().slice(-4);
+}
+function formErrors(f: Form, isNew: boolean, taken: Set<string>) {
+  const e: Partial<Record<keyof Form, string>> = {};
+  if (f.name.trim().length < 2) e.name = "Enter the influencer's name";
+  const code = f.referral_code.trim().toUpperCase();
+  if (isNew && !CODE_RE.test(code)) e.referral_code = "3–32 letters, digits, - or _";
+  else if (isNew && taken.has(code)) e.referral_code = "This code is already used by another influencer";
+  const rate = Number(f.commission_rate);
+  if (f.commission_rate.trim() === "" || !Number.isFinite(rate) || rate < 0 || rate > 100) e.commission_rate = "Enter a number from 0 to 100";
+  if (f.email.trim() && !EMAIL_RE.test(f.email.trim())) e.email = "Enter a valid email address, or leave it blank";
+  if (f.phone.trim() && !PHONE_RE.test(f.phone.trim())) e.phone = "Digits, spaces, + ( ) - only (7–20), or leave it blank";
+  return e;
+}
 
 function InfluencerList({ call }: { call: Call }) {
   const { toast } = useStore();
   const { data, error, loading, reload } = useLoad(() => call<Influencer[]>("/influencers"), [call]);
   const [edit, setEdit] = useState<{ id?: number; f: Form } | null>(null);
   const [err, setErr] = useState(""); const [saving, setSaving] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const [serverErr, setServerErr] = useState<Partial<Record<keyof Form, string>>>({});
+  const taken = useMemo(() => new Set((data || []).map((i) => i.referral_code.toUpperCase())), [data]);
 
   const save = async () => {
     if (!edit) return;
-    setSaving(true); setErr("");
+    setTouched(true);
+    if (Object.keys(formErrors(edit.f, !edit.id, taken)).length) return;
+    setSaving(true); setErr(""); setServerErr({});
     const f = edit.f;
     const body = { name: f.name.trim(), platform: f.platform, commission_rate: Number(f.commission_rate), handle: f.handle.trim() || null, email: f.email.trim() || null, phone: f.phone.trim() || null, notes: f.notes.trim() || null, active: f.active };
     try {
       if (edit.id) await call(`/influencers/${edit.id}`, { method: "PATCH", body });
-      else await call("/influencers", { method: "POST", body: { ...body, referral_code: f.referral_code.trim() } });
+      else await call("/influencers", { method: "POST", body: { ...body, referral_code: f.referral_code.trim().toUpperCase() } });
       toast(`${body.name} saved`); setEdit(null); reload();
-    } catch (e) { setErr((e as Error).message); }
+    } catch (e) {
+      const m = (e as Error).message;
+      if (/already in use/i.test(m)) setServerErr({ referral_code: "This code is already used by another influencer" });
+      else setErr(m);
+    }
     setSaving(false);
   };
   const setActive = async (i: Influencer, active: boolean) => {
@@ -281,12 +316,13 @@ function InfluencerList({ call }: { call: Call }) {
     catch (e) { toast((e as Error).message, "err"); }
   };
   const f = edit?.f; const set = (p: Partial<Form>) => setEdit((e) => e && { ...e, f: { ...e.f, ...p } });
-  const rate = Number(f?.commission_rate);
-  const valid = !!f && f.name.trim().length >= 2 && f.commission_rate !== "" && rate >= 0 && rate <= 100 && (!!edit?.id || /^[A-Za-z0-9_-]{3,32}$/.test(f.referral_code.trim()));
+  const errs = f ? { ...formErrors(f, !edit?.id, taken), ...serverErr } : {};
+  const show = (k: keyof Form) => (touched ? errs[k] : undefined);
+  const open = (e: { id?: number; f: Form }) => { setErr(""); setServerErr({}); setTouched(false); setEdit(e); };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center"><p className="text-sm text-slate-500">Deactivating an influencer stops new referral visits from being tracked. Bookings already attributed keep their commission.</p><Button icon="plus" onClick={() => { setErr(""); setEdit({ f: { ...blank } }); }}>Add influencer</Button></div>
+      <div className="flex justify-between items-center"><p className="text-sm text-slate-500">Deactivating an influencer stops new referral visits from being tracked. Bookings already attributed keep their commission.</p><Button icon="plus" onClick={() => open({ f: { ...blank } })}>Add influencer</Button></div>
       {error && <ErrorBox text={error} retry={reload} />}
       {loading && !data ? <Loading /> : data && (
         <div className="card-flat overflow-hidden"><div className="overflow-x-auto"><table className="w-full">
@@ -298,23 +334,27 @@ function InfluencerList({ call }: { call: Call }) {
               <Td className="text-right font-semibold">{i.commission_rate}%</Td>
               <Td className="text-xs text-slate-500">{[i.email, i.phone].filter(Boolean).join(" · ") || "—"}</Td>
               <Td><Toggle on={i.active} onChange={(v) => void setActive(i, v)} /></Td>
-              <Td><Button size="sm" variant="outline" icon="edit" onClick={() => { setErr(""); setEdit({ id: i.id, f: { name: i.name, platform: i.platform, referral_code: i.referral_code, commission_rate: String(i.commission_rate), handle: i.handle || "", email: i.email || "", phone: i.phone || "", notes: i.notes || "", active: i.active } }); }}>Edit</Button></Td>
+              <Td><Button size="sm" variant="outline" icon="edit" onClick={() => { open({ id: i.id, f: { name: i.name, platform: i.platform, referral_code: i.referral_code, commission_rate: String(i.commission_rate), handle: i.handle || "", email: i.email || "", phone: i.phone || "", notes: i.notes || "", active: i.active } }); }}>Edit</Button></Td>
             </tr>))}</tbody>
         </table>{data.length === 0 && <Empty text="No influencers yet. Add your first influencer to generate a referral link." />}</div></div>
       )}
       <Modal open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? "Edit influencer" : "Add influencer"}
-        footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancel</Button><Button disabled={!valid || saving} onClick={save}>{saving ? "Saving…" : "Save"}</Button></>}>
+        footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancel</Button><Button disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</Button></>}>
         {f && (
           <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="Name"><input className={inputCls} value={f.name} onChange={(e) => set({ name: e.target.value })} /></Field>
-            <Field label="Platform"><Select value={f.platform} onChange={(v) => set({ platform: v })} options={PLATFORMS.map((p) => ({ value: p, label: p }))} /></Field>
-            <Field label="Referral code" hint={edit?.id ? "Codes can't be changed once links are shared" : "3–32 letters, digits, - or _"}><input className={inputCls + " font-mono uppercase"} disabled={!!edit?.id} value={f.referral_code} onChange={(e) => set({ referral_code: e.target.value.toUpperCase() })} /></Field>
-            <Field label="Commission rate (%)" hint="Applies to future bookings only"><input className={inputCls} type="number" min={0} max={100} step={0.5} value={f.commission_rate} onChange={(e) => set({ commission_rate: e.target.value })} /></Field>
-            <Field label="Handle / profile URL"><input className={inputCls} value={f.handle} onChange={(e) => set({ handle: e.target.value })} /></Field>
-            <Field label="Email"><input className={inputCls} type="email" value={f.email} onChange={(e) => set({ email: e.target.value })} /></Field>
-            <Field label="Phone"><input className={inputCls} value={f.phone} onChange={(e) => set({ phone: e.target.value })} /></Field>
-            <Field label="Active"><Toggle on={f.active} onChange={(v) => set({ active: v })} /></Field>
-            <div className="sm:col-span-2"><Field label="Notes"><textarea className={inputCls + " h-20 py-2"} value={f.notes} onChange={(e) => set({ notes: e.target.value })} /></Field></div>
+            <div className="sm:col-span-2 text-xs text-slate-500">Fields marked * are required.</div>
+            <Field label="Name *" error={show("name")}><input className={inputCls} value={f.name} onChange={(e) => set({ name: e.target.value })} /></Field>
+            <Field label="Platform *"><Select value={f.platform} onChange={(v) => set({ platform: v })} options={PLATFORMS.map((p) => ({ value: p, label: p }))} /></Field>
+            <Field label="Referral code *" error={show("referral_code")} hint={edit?.id ? "Codes can't be changed once links are shared" : "3–32 letters, digits, - or _ · editable until saved"}>
+              <div className="flex gap-2"><input className={inputCls + " font-mono uppercase"} disabled={!!edit?.id} value={f.referral_code} onChange={(e) => { setServerErr({}); set({ referral_code: e.target.value.toUpperCase().replace(/\s/g, "") }); }} />
+                {!edit?.id && <Button type="button" variant="outline" onClick={() => { setServerErr({}); set({ referral_code: suggestCode(f.name, taken) }); }}>Generate</Button>}</div>
+            </Field>
+            <Field label="Commission rate (%) *" error={show("commission_rate")} hint="0–100 · applies to future bookings only"><input className={inputCls} type="number" min={0} max={100} step={0.5} value={f.commission_rate} onChange={(e) => set({ commission_rate: e.target.value })} /></Field>
+            <Field label={f.platform === "Blog" || f.platform === "Other" ? "Website / profile URL (optional)" : `${f.platform} handle / profile URL (optional)`}><input className={inputCls} value={f.handle} placeholder={HANDLE_HINT[f.platform]} onChange={(e) => set({ handle: e.target.value })} /></Field>
+            <Field label="Email (optional)" error={show("email")}><input className={inputCls} type="email" value={f.email} onChange={(e) => set({ email: e.target.value })} /></Field>
+            <Field label="Phone (optional)" error={show("phone")}><input className={inputCls} value={f.phone} placeholder="+91 98400 12345" onChange={(e) => set({ phone: e.target.value })} /></Field>
+            <Field label="Status"><Toggle on={f.active} onChange={(v) => set({ active: v })} label={f.active ? "Active" : "Inactive"} /></Field>
+            <div className="sm:col-span-2"><Field label="Notes (optional)"><textarea className={inputCls + " h-20 py-2"} value={f.notes} onChange={(e) => set({ notes: e.target.value })} /></Field></div>
             {err && <div className="sm:col-span-2 text-sm text-red-600">{err}</div>}
           </div>
         )}

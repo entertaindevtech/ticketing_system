@@ -15,6 +15,8 @@ from .geo import client_ip
 from .models import BookingAttribution, Influencer, InfluencerCommission
 
 PLATFORMS = ("Instagram", "YouTube", "Facebook", "X", "TikTok", "Blog", "Other")
+EMAIL_RE = r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,}$"
+PHONE_RE = r"^\+?[0-9 ()-]{7,20}$"
 
 
 # ---------- dependencies (overridable in tests) ----------
@@ -90,8 +92,8 @@ class InfluencerIn(BaseModel):
     referral_code: str
     commission_rate: Decimal = Field(ge=0, le=100, decimal_places=2)
     handle: str | None = Field(default=None, max_length=200)
-    email: str | None = Field(default=None, max_length=200)
-    phone: str | None = Field(default=None, max_length=40)
+    email: str | None = Field(default=None, max_length=200, pattern=EMAIL_RE)
+    phone: str | None = Field(default=None, max_length=40, pattern=PHONE_RE)
     notes: str | None = Field(default=None, max_length=2000)
     active: bool = True
 
@@ -109,8 +111,8 @@ class InfluencerPatch(BaseModel):
     platform: Literal[PLATFORMS] | None = None  # type: ignore[valid-type]
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100, decimal_places=2)
     handle: str | None = Field(default=None, max_length=200)
-    email: str | None = Field(default=None, max_length=200)
-    phone: str | None = Field(default=None, max_length=40)
+    email: str | None = Field(default=None, max_length=200, pattern=EMAIL_RE)
+    phone: str | None = Field(default=None, max_length=40, pattern=PHONE_RE)
     notes: str | None = Field(default=None, max_length=2000)
     active: bool | None = None
     # referral_code is deliberately not editable: links already shared must keep resolving to the same person.
