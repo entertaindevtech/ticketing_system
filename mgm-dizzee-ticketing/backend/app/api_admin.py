@@ -2,7 +2,7 @@
 audit log and the legacy browser-data import. All role-checked and audited."""
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
@@ -11,7 +11,7 @@ from . import bookings, catalog, gate, inventory, legacy
 from .api import cfg, get_db
 from .api_auth import user_out
 from .auth import Actor, require_roles
-from .models import AuditLog, Booking, GateScan, Notification, Offer, User
+from .models import AuditLog, Booking, GateScan, Notification, Offer, OfferImage, User, utcnow
 
 console = APIRouter(prefix="/api/admin")
 ADMIN = require_roles("admin")
@@ -83,6 +83,9 @@ def delete_offer(offer_id: str, db: Session = Depends(get_db), a: Actor = Depend
     used = sum(1 for ids in db.scalars(select(Booking.offer_ids)) if offer_id in ids)
     if used or o.redemptions:
         raise HTTPException(409, "This offer has been used by bookings; pause it instead of deleting it")
+    img = db.get(OfferImage, offer_id)
+    if img:
+        db.delete(img)
     db.delete(o)
     bookings.audit(db, a.code, "offer", offer_id, f'Offer "{o.data.get("name")}" deleted')
     db.commit()
@@ -132,3 +135,51 @@ def legacy_import(body: LegacyIn, db: Session = Depends(get_db), s=Depends(cfg),
     bookings.audit(db, a.code, "import", None, "Legacy import: " + ", ".join(f"{v} {k}" for k, v in counts.items()))
     db.commit()
     return {"summary": counts, "results": results}
+
+
+# ---------- offer images ----------
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+IMAGE_SIGNATURES = (("image/jpeg", lambda b: b[:3] == b"\xff\xd8\xff"), ("image/png", lambda b: b[:8] == b"\x89PNG\r\n\x1a\n"),
+                    ("image/webp", lambda b: b[:4] == b"RIFF" and b[8:12] == b"WEBP"))
+
+
+def sniff_image(blob: bytes) -> str | None:
+    """Content type from the file's own bytes (the declared type is not trusted)."""
+    return next((t for t, ok in IMAGE_SIGNATURES if ok(blob)), None)
+
+
+@console.put("/offers/{offer_id}/image")
+async def put_offer_image(offer_id: str, request: Request, db: Session = Depends(get_db), a: Actor = Depends(ADMIN)):
+    """Upload or replace an offer's image: the raw file as the request body (JPEG, PNG or WebP, max 2 MB)."""
+    o = db.get(Offer, offer_id)
+    if not o:
+        raise HTTPException(404, "Offer not found - save the offer first")
+    blob = await request.body()
+    if not blob:
+        raise HTTPException(422, "The image file is empty")
+    if len(blob) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Image is larger than 2 MB")
+    ctype = sniff_image(blob)
+    if not ctype:
+        raise HTTPException(415, "Use a JPEG, PNG or WebP image")
+    img = db.get(OfferImage, offer_id) or OfferImage(offer_id=offer_id)
+    img.content_type, img.data, img.updated_at = ctype, blob, utcnow()
+    db.add(img)
+    o.data = {**o.data, "image": f"/api/offers/{offer_id}/image?v={int(img.updated_at.timestamp())}"}  # v= busts caches on replace
+    bookings.audit(db, a.code, "offer", offer_id, f'Image uploaded for offer "{o.data.get("name")}" ({len(blob) // 1024} KB)', notify=False)
+    db.commit()
+    return {"image": o.data["image"]}
+
+
+@console.delete("/offers/{offer_id}/image")
+def delete_offer_image(offer_id: str, db: Session = Depends(get_db), a: Actor = Depends(ADMIN)):
+    o = db.get(Offer, offer_id)
+    if not o:
+        raise HTTPException(404, "Offer not found")
+    img = db.get(OfferImage, offer_id)
+    if img:
+        db.delete(img)
+    o.data = {k: v for k, v in o.data.items() if k != "image"}
+    bookings.audit(db, a.code, "offer", offer_id, f'Image removed from offer "{o.data.get("name")}"', notify=False)
+    db.commit()
+    return {"image": None}

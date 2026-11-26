@@ -133,7 +133,7 @@ Business settings live in the database, not in environment variables. Edit them 
 | `finance` | dashboard, reports, bookings, payments, cancellations and refunds, modifications, customers, entry log, notifications, activity log |
 | `counter` | Counter Sale |
 | `gate` | Staff Scanner |
-| `marketing` | Influencers & Regions |
+| `marketing` | Regional Sales Analytics, Influencer Management |
 
 **Accounts.**
 - **Create:** Admin › Staff Management › Add staff (Staff ID, name, gate, roles, initial password of at least 10 characters).

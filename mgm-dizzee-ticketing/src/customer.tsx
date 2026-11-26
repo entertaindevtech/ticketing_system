@@ -214,7 +214,7 @@ function Landing({ onBook }: { onBook: () => void }) {
             const u = offerUnit(o, sample, ctx);
             return (
               <Reveal key={o.id} delay={oi * 90}><article className="group card overflow-hidden lift h-full">
-                <div className="relative"><OfferArt theme={o.theme} type={o.type} className="h-32" />{o.featured && <Badge tone="yellow" className="absolute right-3 top-3"><Icon name="star" size={11} /> Popular</Badge>}
+                <div className="relative"><OfferArt theme={o.theme} type={o.type} image={o.image} className="h-32" />{o.featured && <Badge tone="yellow" className="absolute right-3 top-3"><Icon name="star" size={11} /> Popular</Badge>}
                   <div className="absolute right-3 bottom-3 rounded-xl bg-white px-2.5 py-1 font-display text-sm font-bold text-navy-950">{u?.benefit}</div></div>
                 <div className="p-5">
                   <h3 className="font-display text-lg font-bold text-navy-950">{o.name}</h3>
@@ -447,7 +447,7 @@ export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNe
               return (
                 <div key={o.id} className={`p-4 sm:p-5 transition ${q ? "bg-red-50/60" : ""}`}>
                   <div className="flex flex-col sm:flex-row gap-4">
-                    <div className="relative w-full sm:w-40 shrink-0"><OfferArt theme={o.theme} type={o.type} className="h-28 sm:h-full min-h-28 rounded-2xl" />{o.featured && <Badge tone="yellow" className="absolute left-2 top-2"><Icon name="star" size={10} />Featured</Badge>}</div>
+                    <div className="relative w-full sm:w-40 shrink-0"><OfferArt theme={o.theme} type={o.type} image={o.image} className="h-28 sm:h-full min-h-28 rounded-2xl" />{o.featured && <Badge tone="yellow" className="absolute left-2 top-2"><Icon name="star" size={10} />Featured</Badge>}</div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-3">
                         <div><h3 className="font-display text-lg font-bold text-navy-950">{o.name}</h3><p className="text-sm text-slate-600">{o.description}</p></div>
@@ -480,7 +480,7 @@ export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNe
               {productOffers.filter((o) => o.featured).length > 0 && (
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5"><Icon name="sparkles" size={14} />Featured today</div>
-                  {productOffers.filter((o) => o.featured).map((o) => <div key={o.id} className="flex items-center gap-3 py-1.5"><OfferArt theme={o.theme} type={o.type} className="h-10 w-10 rounded-xl shrink-0 [&>div]:hidden" /><div className="min-w-0"><div className="text-sm font-semibold text-navy-950 truncate">{o.name}</div><div className="text-xs text-slate-500">{offerUnit(o, date, ctx)?.benefit}</div></div></div>)}
+                  {productOffers.filter((o) => o.featured).map((o) => <div key={o.id} className="flex items-center gap-3 py-1.5"><OfferArt theme={o.theme} type={o.type} image={o.image} className="h-10 w-10 rounded-xl shrink-0 [&>div]:hidden" /><div className="min-w-0"><div className="text-sm font-semibold text-navy-950 truncate">{o.name}</div><div className="text-xs text-slate-500">{offerUnit(o, date, ctx)?.benefit}</div></div></div>)}
                 </div>
               )}
               <div>
@@ -519,7 +519,7 @@ export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNe
       {/* sticky mobile bar */}
       <MobileBar priced={priced} label="Add-ons" disabled={!canProceed} onNext={onNext} />
       <Modal open={!!terms} onClose={() => setTerms(null)} title={terms?.name || ""}>
-        {terms && <div className="space-y-3 text-sm text-slate-700"><OfferArt theme={terms.theme} type={terms.type} className="h-28 rounded-2xl" /><p>{terms.description}</p><div className="rounded-xl bg-slate-50 p-3"><div className="font-semibold text-navy-950 mb-1">Valid</div>{validityText(terms)}</div><ul className="list-disc pl-5 space-y-1">{terms.terms.split("\n").filter(Boolean).map((t) => <li key={t}>{t}</li>)}</ul></div>}
+        {terms && <div className="space-y-3 text-sm text-slate-700"><OfferArt theme={terms.theme} type={terms.type} image={terms.image} className="h-28 rounded-2xl" /><p>{terms.description}</p><div className="rounded-xl bg-slate-50 p-3"><div className="font-semibold text-navy-950 mb-1">Valid</div>{validityText(terms)}</div><ul className="list-disc pl-5 space-y-1">{terms.terms.split("\n").filter(Boolean).map((t) => <li key={t}>{t}</li>)}</ul></div>}
       </Modal>
     </div>
   );
@@ -578,12 +578,14 @@ function SideSummary({ date, priced, children }: { date: string; priced: Priced;
 export function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { cart: Cart; setCart: React.Dispatch<React.SetStateAction<Cart>>; priced: Priced; date: string; onBack: () => void; onNext: () => void }) {
   const { db } = useStore();
   const setA = (id: string, q: number) => setCart((c) => ({ ...c, addons: { ...c.addons, [id]: q } }));
+  // Skipping means no extras: clear any add-ons picked here; tickets, offers and coupon stay as they are.
+  const skip = () => { setCart((c) => ({ ...c, addons: {} })); onNext(); };
   const art: Record<string, string> = { food: "from-orange-400 to-mgm-red", locker: "from-slate-500 to-navy-950", swim: "from-sky-400 to-blue-700", vr: "from-violet-500 to-fuchsia-700", camera: "from-amber-300 to-orange-500", cabana: "from-emerald-400 to-teal-700" };
   return (
     <div className="grid lg:grid-cols-[1fr_360px] gap-6 fade-in">
       <div>
-        <h2 className="font-display text-2xl font-bold text-navy-950">Make it a perfect day</h2>
-        <p className="text-sm text-slate-500 mb-5">Optional add-ons – skip if you don't need them.</p>
+        <div className="flex flex-wrap items-center gap-2"><h2 className="font-display text-2xl font-bold text-navy-950">Make it a perfect day</h2><Badge tone="slate">Optional</Badge></div>
+        <p className="text-sm text-slate-500 mb-5">Add-ons are extras. You can continue without them — your tickets are already in your booking.</p>
         <div className="grid sm:grid-cols-2 gap-4 stagger">
           {db.addons.map((a) => {
             const q = cart.addons[a.id] || 0;
@@ -606,7 +608,7 @@ export function AddonsStep({ cart, setCart, priced, date, onBack, onNext }: { ca
             );
           })}
         </div>
-        <div className="mt-6 flex justify-between items-center gap-2"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button variant="outline" onClick={onNext}>Skip Add-ons</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="hidden lg:inline-flex">Continue</Button></div>
+        <div className="mt-6 flex justify-between items-center gap-2"><Button variant="ghost" icon="back" onClick={onBack}>Back to tickets</Button><Button variant="outline" onClick={skip}>Skip add-ons</Button><Button size="lg" onClick={onNext} iconRight="arrow" className="hidden lg:inline-flex">Continue</Button></div>
       </div>
       <SideSummary date={date} priced={priced}><Button size="lg" className="w-full mt-4 hidden lg:flex" onClick={onNext} iconRight="arrow">Continue to Details</Button></SideSummary>
       <MobileBar priced={priced} label="Continue" disabled={false} onNext={onNext} />

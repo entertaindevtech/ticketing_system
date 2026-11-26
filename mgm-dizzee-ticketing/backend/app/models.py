@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func, text,
+    JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -486,3 +486,12 @@ class AuthSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OfferImage(Base):
+    """Optional banner image for an offer, kept in PostgreSQL (no separate file storage to provision or back up)."""
+    __tablename__ = "offer_images"
+    offer_id: Mapped[str] = mapped_column(ForeignKey("offers.id"), primary_key=True)
+    content_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

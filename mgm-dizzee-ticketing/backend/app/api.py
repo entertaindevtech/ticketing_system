@@ -182,7 +182,7 @@ _comm_load = (selectinload(InfluencerCommission.attribution).selectinload(Bookin
 def list_commissions(
     influencer_id: int | None = None, status: Literal["pending", "approved", "paid", "reversed"] | None = None,
     date_from: date | None = Query(default=None, alias="from"), date_to: date | None = Query(default=None, alias="to"),
-    limit: int = Query(default=200, le=1000), db: Session = Depends(get_db),
+    limit: int = Query(default=200, ge=1, le=100_000), db: Session = Depends(get_db),
 ):
     lo, hi = analytics._range(date_from, date_to)
     q = select(InfluencerCommission).join(BookingAttribution).options(*_comm_load).order_by(BookingAttribution.paid_at.desc()).limit(limit)

@@ -1,16 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Booking, DB, MONTHS, Offer, OfferStatus, OfferType, Staff, TODAY, TicketCat, WD, addDays, dateStatus, datesBetween, effectiveStatus, eligibleOffers,
   fmtDate, fmtShort, fmtTime, inr, offerUnit, parseISO, priceAdj, ticketPrice, tierOf, MIN_DATE, MAX_DATE, rid,
   isRefunded, modificationEligibility, priceCart,
 } from "./store";
-import { LEGACY_KEY, api, legacyBookings } from "./api";
+import { API, LEGACY_KEY, api, legacyBookings, uploadFile } from "./api";
 import { StaffLogin } from "./staff";
 import { CountUp, DateInput, Select, TimeInput } from "./ui";
 import { Badge, Button, Field, Icon, Logo, Modal, OfferArt, QR, THEMES, Toggle, copyText, hasRole, inputCls, useStore } from "./ui";
 import { BarChart, Donut, Funnel, HBars, LineChart, PALETTE } from "./charts";
 import { useCtx, validityText } from "./customer";
-import InfluencerModule from "./influencers";
+import InfluencerModule, { RegionalAnalytics } from "./influencers";
 import CounterSale from "./counter";
 
 const MODULES = [
@@ -18,13 +18,13 @@ const MODULES = [
   ["offers", "Offer Management", "tag"], ["bookings", "Booking Management", "file"], ["payments", "Payment Management", "card"],
   ["customers", "Customer Management", "users"], ["entry", "QR / Entry Management", "qr"], ["reports", "Reports & Analytics", "chart"],
   ["staff", "Staff Management", "user"], ["counter", "Counter Sale", "zap"], ["notifications", "Notifications", "mail"], ["audit", "Activity Log", "clock"],
-  ["settings", "Settings", "settings"], ["influencers", "Influencers & Regions", "trend"],
+  ["settings", "Settings", "settings"], ["regions", "Regional Sales Analytics", "chart"], ["influencers", "Influencer Management", "trend"],
 ] as const;
 type Mod = (typeof MODULES)[number][0];
 // Which staff roles can open which module (admin: everything). The server enforces the same on every API call.
 const MODULE_ROLES: Record<Mod, string[]> = {
   dashboard: ["finance"], reports: ["finance"], calendar: [], tickets: [], offers: [], bookings: ["finance"], payments: ["finance"],
-  customers: ["finance"], counter: ["counter"], influencers: ["marketing"], entry: ["finance"], staff: [], notifications: ["finance"],
+  customers: ["finance"], counter: ["counter"], regions: ["marketing"], influencers: ["marketing"], entry: ["finance"], staff: [], notifications: ["finance"],
   audit: ["finance"], settings: [],
 };
 
@@ -48,11 +48,12 @@ function AdminConsole() {
     bookings: "Search, review and manage customer bookings", payments: "Gateway transactions, settlements and refunds",
     customers: "Customer profiles and booking history", entry: "Gate scans, entry status and rejected tickets",
     reports: "Revenue, sales mix and offer performance", staff: "Gate staff accounts and assignments", settings: "Park details and booking rules",
-    influencers: "Influencer referrals, commissions and approximate regional sales",
+    regions: "Website and counter sales by state, city and acquisition channel",
+    influencers: "Influencer performance, campaigns, referral links and commissions",
     counter: "Walk-in ticket sales at the park counter (simulated payment)", notifications: "Booking, cancellation, refund and change events",
     audit: "Who did what, and when — admin actions and gate scans",
   };
-  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Counter Sale", ["counter"]], ["Marketing", ["influencers"]], ["Operations", ["entry", "staff"]], ["Oversight", ["notifications", "audit"]], ["System", ["settings"]]];
+  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Counter Sale", ["counter"]], ["Marketing", ["regions", "influencers"]], ["Operations", ["entry", "staff"]], ["Oversight", ["notifications", "audit"]], ["System", ["settings"]]];
   const unread = (db.notifications || []).filter((n) => !n.read).length;
   return (
     <div className="min-h-screen bg-[#F4F3EF] flex">
@@ -96,6 +97,7 @@ function AdminConsole() {
           {allowed && mod === "reports" && <Reports />}
           {allowed && mod === "staff" && <StaffMgmt />}
           {allowed && mod === "settings" && <SettingsPage />}
+          {allowed && mod === "regions" && <RegionalAnalytics />}
           {allowed && mod === "influencers" && <InfluencerModule />}
           {allowed && mod === "counter" && <CounterSale />}
           {allowed && mod === "notifications" && <NotificationsPage />}
@@ -350,7 +352,7 @@ function OfferMgmt() {
                 const st = effectiveStatus(o);
                 return (
                   <tr key={o.id} className="hover:bg-slate-50/60 transition-colors">
-                    <Td><div className="flex items-center gap-3"><OfferArt theme={o.theme} type={o.type} className="h-9 w-9 rounded-lg shrink-0 [&>div]:hidden" /><div><div className="font-semibold text-navy-950 flex items-center gap-1.5">{o.name}{o.featured && <Icon name="star" size={13} className="text-mgm-yellow" />}</div><div className="text-xs text-slate-500">{o.coupon ? <span className="font-mono font-bold text-mgm-red">{o.coupon}</span> : "Offer ticket"} · priority {o.priority}</div></div></div></Td>
+                    <Td><div className="flex items-center gap-3"><OfferArt theme={o.theme} type={o.type} image={o.image} className="h-9 w-9 rounded-lg shrink-0 [&>div]:hidden" /><div><div className="font-semibold text-navy-950 flex items-center gap-1.5">{o.name}{o.featured && <Icon name="star" size={13} className="text-mgm-yellow" />}</div><div className="text-xs text-slate-500">{o.coupon ? <span className="font-mono font-bold text-mgm-red">{o.coupon}</span> : "Offer ticket"} · priority {o.priority}</div></div></div></Td>
                     <Td>{TYPE_LABEL[o.type]}<div className="text-xs text-slate-500">{o.type === "percent" ? `${o.value}% off` : o.type === "flat" ? `${inr(o.value)} off` : o.type === "bxgy" ? `Buy ${o.buyX} get ${o.getY}` : inr(o.packagePrice)}</div></Td>
                     <Td className="text-xs text-slate-600 !whitespace-normal"><div className="w-36">{validityText(o)}</div></Td>
                     <Td className="text-xs !whitespace-normal"><div className="w-32">{o.categories.map((c) => db.tickets.find((t) => t.id === c)?.name).join(", ")}</div></Td>
@@ -381,9 +383,21 @@ function OfferMgmt() {
 }
 
 function OfferForm({ offer, onClose }: { offer: Offer; onClose: () => void }) {
-  const { db, call } = useStore(); const ctx = useCtx();
+  const { db, call, refresh } = useStore(); const ctx = useCtx();
   const [o, setO] = useState<Offer>(offer);
   const [err, setErr] = useState("");
+  // optional banner image: chosen locally (previewed), uploaded after the offer itself is saved
+  const [img, setImg] = useState<{ file: File | null; preview?: string; removed: boolean; error?: string }>({ file: null, removed: false });
+  const fileRef = useRef<HTMLInputElement>(null);
+  const shownImg = img.preview ?? (img.removed ? undefined : o.image);
+  const pickImage = (f?: File) => {
+    if (!f) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) return setImg((s) => ({ ...s, error: "Choose a JPEG, PNG or WebP image." }));
+    if (f.size > 2 * 1024 * 1024) return setImg((s) => ({ ...s, error: "This image is larger than 2 MB." }));
+    if (img.preview) URL.revokeObjectURL(img.preview);
+    setImg({ file: f, preview: URL.createObjectURL(f), removed: false });
+  };
+  const removeImage = () => { if (img.preview) URL.revokeObjectURL(img.preview); setImg({ file: null, removed: true }); if (fileRef.current) fileRef.current.value = ""; };
   const isNew = !db.offers.some((x) => x.id === offer.id);
   const set = <K extends keyof Offer>(k: K, v: Offer[K]) => setO((p) => ({ ...p, [k]: v }));
   const toggleArr = (arr: (string | number)[], v: string | number) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
@@ -397,8 +411,20 @@ function OfferForm({ offer, onClose }: { offer: Offer; onClose: () => void }) {
     if (final.visitEnd < final.visitStart || final.bookingEnd < final.bookingStart) return setErr("End dates must be after start dates.");
     if (final.coupon && db.offers.some((x) => x.id !== final.id && x.coupon.toUpperCase() === final.coupon)) return setErr("Another offer already uses this coupon code.");
     if (final.type === "package" && !Object.values(final.packageContents).some((q) => q > 0)) return setErr("Add at least one ticket to the package.");
-    void call(() => api(`/api/admin/offers/${final.id}`, { method: "PUT", body: final }), status === "active" ? `${final.name} published – live on matching dates` : `${final.name} saved`)
-      .then((r) => { if (r) onClose(); });
+    void (async () => {
+      const r = await call(() => api(`/api/admin/offers/${final.id}`, { method: "PUT", body: final }), status === "active" ? `${final.name} published – live on matching dates` : `${final.name} saved`);
+      if (!r) return;
+      try {
+        if (img.file) await uploadFile(`/api/admin/offers/${final.id}/image`, img.file);
+        else if (img.removed && offer.image) await api(`/api/admin/offers/${final.id}/image`, { method: "DELETE" });
+      } catch (e) {
+        setErr(`Offer saved, but the image ${img.file ? "upload" : "removal"} failed: ${(e as Error).message}`);
+        await refresh().catch(() => undefined);
+        return;
+      }
+      if (img.file || img.removed) await refresh().catch(() => undefined);
+      onClose();
+    })();
   };
   const months: [number, string][] = [[10, "Nov"], [11, "Dec"]];
   return (
@@ -413,6 +439,15 @@ function OfferForm({ offer, onClose }: { offer: Offer; onClose: () => void }) {
               <Field label="Offer type"><Select value={o.type} onChange={(v) => set("type", v as OfferType)} options={[{ value: "percent", label: TYPE_LABEL.percent, hint: "e.g. 25% off a ticket" }, { value: "flat", label: TYPE_LABEL.flat, hint: "e.g. ₹250 off per ticket" }, { value: "bxgy", label: TYPE_LABEL.bxgy, hint: "e.g. buy 4, get 2 free" }, { value: "package", label: TYPE_LABEL.package, hint: "e.g. 2 adults + 2 kids for ₹3,499" }]} /></Field>
               <Field label="Status"><Select value={o.status} onChange={(v) => set("status", v as OfferStatus)} options={[{ value: "draft", label: "Draft", dot: "#A0A0A0" }, { value: "scheduled", label: "Scheduled", dot: "#0EA5E9" }, { value: "active", label: "Active", dot: "#10B981" }, { value: "paused", label: "Paused", dot: "#F59E0B" }, { value: "expired", label: "Expired", dot: "#CE3B37" }]} /></Field>
               <Field label="Banner theme"><div className="flex gap-1.5 flex-wrap">{Object.entries(THEMES).map(([k, t]) => <button key={k} type="button" title={t.label} onClick={() => set("theme", k)} className={`h-9 w-9 rounded-lg ${o.theme === k ? "ring-2 ring-offset-2 ring-navy-950" : ""}`} style={{ background: t.bg }} />)}</div></Field>
+              <div className="sm:col-span-2"><Field label="Offer image (optional)" error={img.error} hint="JPEG, PNG or WebP, up to 2 MB. Shown on the customer's offer card instead of the theme pattern.">
+                <div className="flex flex-wrap items-center gap-3">
+                  {shownImg ? <img src={shownImg.startsWith("/") ? API + shownImg : shownImg} alt="Offer image preview" className="h-16 w-28 rounded-lg object-cover border border-slate-200" />
+                    : <div className="h-16 w-28 rounded-lg border border-dashed border-slate-300 grid place-items-center text-xs text-slate-400">No image</div>}
+                  <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" aria-label="Offer image file" onChange={(e) => pickImage(e.target.files?.[0])} />
+                  <Button type="button" variant="outline" icon="upload" onClick={() => fileRef.current?.click()}>{shownImg ? "Replace image" : "Upload image"}</Button>
+                  {shownImg && <Button type="button" variant="ghost" icon="trash" onClick={removeImage}>Remove</Button>}
+                </div>
+              </Field></div>
               <div className="flex items-end gap-4"><Field label="Priority (1 = top)"><input type="number" min={1} className={inputCls + " w-24"} value={o.priority} onChange={(e) => set("priority", Number(e.target.value))} /></Field><div className="pb-2"><Toggle on={o.featured} onChange={(v) => set("featured", v)} label="Featured" /></div></div>
             </div>
           </FormSection>
@@ -469,7 +504,7 @@ function OfferForm({ offer, onClose }: { offer: Offer; onClose: () => void }) {
         <div className="lg:sticky lg:top-0 self-start space-y-3">
           <div className="text-xs font-bold uppercase text-slate-500">Customer preview</div>
           <div className="rounded-2xl border border-slate-200 overflow-hidden">
-            <OfferArt theme={o.theme} type={o.type} className="h-28" />
+            <OfferArt theme={o.theme} type={o.type} image={shownImg} className="h-28" />
             <div className="p-3"><div className="font-bold text-navy-950">{o.name || "Offer name"}</div><div className="text-xs text-slate-500 line-clamp-2">{o.description || "Description"}</div>
               {o.coupon ? <div className="mt-2 rounded-lg border-2 border-dashed border-mgm-red/40 px-2 py-1 font-mono font-bold text-mgm-red text-sm inline-block">{o.coupon}</div> : u && <div className="mt-2 flex items-baseline gap-2"><span className="font-display text-xl font-bold">{inr(u.price)}</span>{u.original > u.price && <span className="text-xs line-through text-slate-400">{inr(u.original)}</span>}</div>}
               {u && !o.coupon && <div className="text-[11px] text-slate-500">{u.label} · {u.benefit}</div>}
