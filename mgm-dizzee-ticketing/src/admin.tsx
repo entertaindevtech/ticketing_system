@@ -58,7 +58,7 @@ function AdminConsole() {
   return (
     <div className="min-h-screen bg-[#F4F3EF] flex">
       {mobileNav && <div className="fixed inset-0 z-40 bg-navy-950/50 lg:hidden" onClick={() => setMobileNav(false)} />}
-      <aside className={`fixed lg:sticky top-11 z-50 lg:z-10 h-[calc(100dvh-44px)] bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 max-lg:invisible lg:left-0"}`}>
+      <aside className={`fixed lg:sticky top-0 z-50 lg:z-10 h-dvh bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 max-lg:invisible lg:left-0"}`}>
         <div className="h-[68px] px-4 flex items-center justify-between border-b border-white/10 overflow-hidden"><div className="flex items-center gap-2.5"><Logo size={46} />{!collapsed && <div className="leading-tight"><div className="font-display text-base font-bold text-white">Ticketing</div><div className="text-[10px] uppercase tracking-widest text-white/60">Admin Console</div></div>}</div><button className="lg:hidden" onClick={() => setMobileNav(false)} aria-label="Close menu"><Icon name="x" /></button></div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 no-scrollbar">
           {GROUPS.filter(([, keys]) => visible.some(([k]) => keys.includes(k))).map(([g, keys]) => (
@@ -77,7 +77,7 @@ function AdminConsole() {
         <button onClick={() => setCollapsed(!collapsed)} className="hidden lg:flex items-center gap-2 m-3 rounded-xl px-3 py-2 text-xs text-white/60 hover:bg-white/10"><Icon name={collapsed ? "right" : "left"} size={16} />{!collapsed && "Collapse"}</button>
       </aside>
       <div className="flex-1 min-w-0">
-        <header className="sticky top-11 z-30 h-[68px] glass border-b border-black/5 flex items-center gap-3 px-4 sm:px-6">
+        <header className="sticky top-0 z-30 h-[68px] glass border-b border-black/5 flex items-center gap-3 px-4 sm:px-6">
           <button className="lg:hidden h-10 w-10 grid place-items-center rounded-xl hover:bg-slate-100" onClick={() => setMobileNav(true)} aria-label="Open menu"><Icon name="menu" /></button>
           <div className="flex-1 min-w-0"><h1 className="font-display text-lg sm:text-xl font-bold text-navy-950 line-clamp-2 sm:truncate leading-tight">{title}</h1><div className="hidden sm:block text-xs text-slate-500 truncate">{desc[mod]}</div></div>
           <Badge tone="amber" className="max-sm:hidden">Simulated payments</Badge>

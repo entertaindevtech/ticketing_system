@@ -64,6 +64,7 @@ export default function CustomerApp() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <p className="bg-navy-950 px-4 py-1.5 text-center text-[11px] text-white/60"><Icon name="shield" size={12} className="inline -mt-0.5 mr-1 text-mgm-yellow" />Payments are simulated · no real money is taken</p>
       <SiteHeader onBook={() => go(date ? "tickets" : "date")} onHome={() => go("home")} inFlow={step !== "home"} />
       {step === "home" && <Landing onBook={() => go("date")} />}
       {step === "home" && <div className="fixed bottom-5 right-5 z-50"><Button variant="dark" icon="search" onClick={() => go("mybookings")}>My Bookings</Button></div>}
@@ -84,7 +85,7 @@ export default function CustomerApp() {
 
 function SiteHeader({ onBook, onHome, inFlow }: { onBook: () => void; onHome: () => void; inFlow: boolean }) {
   return (
-    <header className="sticky top-11 z-40 glass-dark border-b border-white/5">
+    <header className="sticky top-0 z-40 glass-dark border-b border-white/5">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 h-20 flex items-center justify-between gap-4">
         <button onClick={onHome} aria-label="MGM Dizzee World home" className="shrink-0"><Logo size={70} /></button>
         <nav className="hidden md:flex items-center gap-1 rounded-full bg-white/5 p-1 ring-1 ring-white/10 font-display text-[15px] font-semibold text-white/85">
@@ -324,7 +325,7 @@ export function DateStep({ date, onPick, onNext }: { date: string; onPick: (d: s
           <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-mgm-red" />Today</span>
         </div>
       </div>
-      <aside className="space-y-4 lg:sticky lg:top-36 self-start">
+      <aside className="space-y-4 lg:sticky lg:top-25 self-start">
         <div className="rounded-2xl hero-mesh text-white p-5">
           <div className="text-xs font-bold uppercase tracking-widest text-white/75">Your visit</div>
           {date ? (
@@ -500,7 +501,7 @@ export function TicketsStep({ date, setDate, cart, setCart, priced, onBack, onNe
         </div>
 
         {/* RIGHT: booking summary + info */}
-        <aside className="lg:sticky lg:top-36 self-start">
+        <aside className="lg:sticky lg:top-25 self-start">
           <div className="card overflow-hidden">
             <div className="bg-gradient-to-br from-[#2A2926] to-navy-950 px-5 py-4 flex items-center justify-between gap-3">
               <h3 className="font-display text-lg font-bold text-white">Booking summary</h3>
@@ -566,7 +567,7 @@ const Row = ({ k, v, tone = "" }: { k: string; v: string; tone?: string }) => <d
 
 function SideSummary({ date, priced, children }: { date: string; priced: Priced; children?: React.ReactNode }) {
   return (
-    <aside className="lg:sticky lg:top-36 self-start card p-5">
+    <aside className="lg:sticky lg:top-25 self-start card p-5">
       <div className="flex items-center gap-3 pb-4 border-b border-slate-100"><span className="grid h-11 w-11 place-items-center rounded-2xl bg-navy-950 text-mgm-yellow"><Icon name="calendar" /></span><div><div className="text-xs text-slate-500">Visit date</div><div className="font-bold text-navy-950">{fmtDate(date)}</div></div></div>
       <SummaryLines priced={priced} />
       {children}

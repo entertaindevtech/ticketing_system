@@ -27,22 +27,22 @@ function deviceId() {
   return d;
 }
 
-export default function StaffApp({ pwa = false }: { pwa?: boolean }) {
+export default function StaffApp() {
   const { me, setMe } = useStore();
   const canScan = !!me && (me.roles.includes("gate") || me.roles.includes("admin"));
   return (
     <div className="staff-h bg-slate-200/60 flex justify-center">
       <div className="w-full max-w-md bg-slate-50 staff-h shadow-2xl relative">
         {me && canScan ? <Scanner staff={me} onLogout={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); }} />
-          : <StaffLogin title="Gate Scanner" subtitle={me ? "This account has no gate access. Sign in with a gate staff account." : "Sign in to start validating tickets."}><InstallHint pwa={pwa} /></StaffLogin>}
+          : <StaffLogin title="Gate Scanner" subtitle={me ? "This account has no gate access. Sign in with a gate staff account." : "Sign in to start validating tickets."}><InstallHint /></StaffLogin>}
       </div>
     </div>
   );
 }
 
 type InstallEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<unknown> };
-/** Install button (Android/desktop Chrome), Add-to-Home-Screen steps (iOS), or a link to the installable app. */
-function InstallHint({ pwa }: { pwa: boolean }) {
+/** Install button (Android/desktop Chrome) or Add-to-Home-Screen steps (iOS). */
+function InstallHint() {
   const [evt, setEvt] = useState<InstallEvent | null>(null);
   useEffect(() => {
     const f = (e: Event) => { e.preventDefault(); setEvt(e as InstallEvent); };
@@ -51,7 +51,6 @@ function InstallHint({ pwa }: { pwa: boolean }) {
   const installed = window.matchMedia?.("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone;
   if (installed) return null;
   const box = "mt-6 rounded-2xl bg-white/10 p-4 text-sm text-white/85";
-  if (!pwa) return <a href="/staff.html" className={box + " flex items-center gap-2 font-semibold hover:bg-white/15"}><Icon name="phoneDev" size={18} />Open the installable gate-scanner app</a>;
   if (evt) return <button onClick={async () => { await evt.prompt(); await evt.userChoice; setEvt(null); }} className={box + " w-full flex items-center justify-center gap-2 font-bold"}><Icon name="download" size={18} />Install the gate app on this phone</button>;
   if (/iphone|ipad|ipod/i.test(navigator.userAgent)) return <p className={box}><b>Install on iPhone:</b> open this page in Safari, tap the Share button, then <b>Add to Home Screen</b>.</p>;
   return <p className={box}><b>Install:</b> open your browser menu and choose <b>Install app</b> or <b>Add to Home screen</b>.</p>;

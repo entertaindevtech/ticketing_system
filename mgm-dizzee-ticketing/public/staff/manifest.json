@@ -3,7 +3,7 @@
   "name": "MGM Gate Scanner",
   "short_name": "MGM Gate",
   "description": "Ticket scanner for MGM Dizzee World gate staff.",
-  "start_url": "/staff.html",
+  "start_url": "/staff",
   "scope": "/staff",
   "display": "standalone",
   "orientation": "portrait",

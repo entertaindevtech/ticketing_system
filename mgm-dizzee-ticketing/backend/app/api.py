@@ -121,7 +121,7 @@ class InfluencerPatch(BaseModel):
 def influencer_out(i: Influencer, base_url: str) -> dict:
     return {
         "id": i.id, "name": i.name, "platform": i.platform, "referral_code": i.referral_code,
-        "referral_url": f"{base_url}/?ref={i.referral_code}", "commission_rate": float(i.commission_rate),
+        "referral_url": f"{base_url}/customer?ref={i.referral_code}", "commission_rate": float(i.commission_rate),
         "handle": i.handle, "email": i.email, "phone": i.phone, "notes": i.notes, "active": i.active,
         "created_at": i.created_at.isoformat() if i.created_at else None,
     }

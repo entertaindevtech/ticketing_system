@@ -6,9 +6,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -90,17 +90,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     dist = os.path.abspath(settings.frontend_dist)
     if os.path.isdir(dist):
-        index = os.path.join(dist, "index.html")
+        # One page per portal; any deeper path under a portal is that portal's client-side route (refresh / deep link).
+        pages = {p: os.path.join(dist, f) for p, f in (("customer", "index.html"), ("admin", "admin.html"), ("staff", "staff.html"))}
         app.mount("/assets", StaticFiles(directory=os.path.join(dist, "assets")), name="assets")
 
         @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
-        def spa(path: str):
-            if path.startswith("api/"):
+        def spa(path: str, request: Request):
+            if path == "api" or path.startswith("api/"):
                 raise HTTPException(404, "Not found")
+            if not path:  # keeps ?ref= on shared influencer links; browsers keep #booking/... fragments across redirects
+                q = request.url.query
+                return RedirectResponse("/customer" + (f"?{q}" if q else ""), status_code=302)
             f = os.path.normpath(os.path.join(dist, path))
-            if path and f.startswith(dist + os.sep) and os.path.isfile(f):
+            if f.startswith(dist + os.sep) and os.path.isfile(f):
                 return FileResponse(f)
-            return FileResponse(index)
+            return FileResponse(pages.get(path.split("/", 1)[0], pages["customer"]))
     return app
 
 
