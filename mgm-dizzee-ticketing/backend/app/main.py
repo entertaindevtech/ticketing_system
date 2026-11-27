@@ -90,17 +90,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     dist = os.path.abspath(settings.frontend_dist)
     if os.path.isdir(dist):
+        # One page per portal: /admin, /counter and /staff (any deeper path is that portal's client-side route, so
+        # refreshes and deep links work); everything else, including /, is the customer site.
         index = os.path.join(dist, "index.html")
+        pages = {p: os.path.join(dist, f) for p, f in (("admin", "admin.html"), ("counter", "counter.html"), ("staff", "staff.html"))}
         app.mount("/assets", StaticFiles(directory=os.path.join(dist, "assets")), name="assets")
 
         @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
         def spa(path: str):
-            if path.startswith("api/"):
+            if path == "api" or path.startswith("api/"):
                 raise HTTPException(404, "Not found")
             f = os.path.normpath(os.path.join(dist, path))
             if path and f.startswith(dist + os.sep) and os.path.isfile(f):
                 return FileResponse(f)
-            return FileResponse(index)
+            return FileResponse(pages.get(path.split("/", 1)[0], index))
     return app
 
 

@@ -1,7 +1,7 @@
 // Service worker for the staff gate app (scope /staff). It caches only the static app shell so the app opens
 // quickly; it never touches /api/ — ticket validation, sessions and scan history always go to the server.
 // shortcut: /staff/* (manifest, icons) is cache-first; bump this name whenever those files change.
-const CACHE = "mgm-staff-shell-v1";
+const CACHE = "mgm-staff-shell-v2"; // v2: start_url moved to /staff
 const SHELL = "/staff.html";
 
 self.addEventListener("install", (e) => {

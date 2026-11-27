@@ -11,26 +11,28 @@ import { Badge, Button, Field, Icon, Logo, Modal, OfferArt, QR, THEMES, Toggle, 
 import { BarChart, Donut, Funnel, HBars, LineChart, PALETTE } from "./charts";
 import { useCtx, validityText } from "./customer";
 import InfluencerModule, { RegionalAnalytics } from "./influencers";
-import CounterSale from "./counter";
 
 const MODULES = [
   ["dashboard", "Dashboard", "grid"], ["calendar", "Calendar Management", "calendar"], ["tickets", "Ticket Management", "ticket"],
   ["offers", "Offer Management", "tag"], ["bookings", "Booking Management", "file"], ["payments", "Payment Management", "card"],
   ["customers", "Customer Management", "users"], ["entry", "QR / Entry Management", "qr"], ["reports", "Reports & Analytics", "chart"],
-  ["staff", "Staff Management", "user"], ["counter", "Counter Sale", "zap"], ["notifications", "Notifications", "mail"], ["audit", "Activity Log", "clock"],
+  ["staff", "Staff Management", "user"], ["notifications", "Notifications", "mail"], ["audit", "Activity Log", "clock"],
   ["settings", "Settings", "settings"], ["regions", "Regional Sales Analytics", "chart"], ["influencers", "Influencer Management", "trend"],
 ] as const;
 type Mod = (typeof MODULES)[number][0];
 // Which staff roles can open which module (admin: everything). The server enforces the same on every API call.
 const MODULE_ROLES: Record<Mod, string[]> = {
   dashboard: ["finance"], reports: ["finance"], calendar: [], tickets: [], offers: [], bookings: ["finance"], payments: ["finance"],
-  customers: ["finance"], counter: ["counter"], regions: ["marketing"], influencers: ["marketing"], entry: ["finance"], staff: [], notifications: ["finance"],
+  customers: ["finance"], regions: ["marketing"], influencers: ["marketing"], entry: ["finance"], staff: [], notifications: ["finance"],
   audit: ["finance"], settings: [],
 };
 
 export default function AdminApp() {
   const { me } = useStore();
   if (!me) return <div className="staff-h bg-slate-200/60 flex justify-center"><div className="w-full max-w-md"><StaffLogin title="Admin Console" subtitle="Sign in with your MGM staff account." /></div></div>;
+  // Counter Sale lives in the counter portal: a counter account with no admin module goes there (its admin API calls
+  // would be refused server-side anyway).
+  if (me.roles.includes("counter") && !MODULES.some(([k]) => hasRole(me, ...MODULE_ROLES[k]))) { location.replace("/counter"); return null; }
   return <AdminConsole />;
 }
 
@@ -50,15 +52,15 @@ function AdminConsole() {
     reports: "Revenue, sales mix and offer performance", staff: "Gate staff accounts and assignments", settings: "Park details and booking rules",
     regions: "Website and counter sales by state, city and acquisition channel",
     influencers: "Influencer performance, campaigns, referral links and commissions",
-    counter: "Walk-in ticket sales at the park counter (simulated payment)", notifications: "Booking, cancellation, refund and change events",
+    notifications: "Booking, cancellation, refund and change events",
     audit: "Who did what, and when — admin actions and gate scans",
   };
-  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Counter Sale", ["counter"]], ["Marketing", ["regions", "influencers"]], ["Operations", ["entry", "staff"]], ["Oversight", ["notifications", "audit"]], ["System", ["settings"]]];
+  const GROUPS: [string, string[]][] = [["Overview", ["dashboard", "reports"]], ["Sales setup", ["calendar", "tickets", "offers"]], ["Orders", ["bookings", "payments", "customers"]], ["Marketing", ["regions", "influencers"]], ["Operations", ["entry", "staff"]], ["Oversight", ["notifications", "audit"]], ["System", ["settings"]]];
   const unread = (db.notifications || []).filter((n) => !n.read).length;
   return (
     <div className="min-h-screen bg-[#F4F3EF] flex">
       {mobileNav && <div className="fixed inset-0 z-40 bg-navy-950/50 lg:hidden" onClick={() => setMobileNav(false)} />}
-      <aside className={`fixed lg:sticky top-11 z-50 lg:z-10 h-[calc(100dvh-44px)] bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 max-lg:invisible lg:left-0"}`}>
+      <aside className={`fixed lg:sticky top-0 z-50 lg:z-10 h-dvh bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 max-lg:invisible lg:left-0"}`}>
         <div className="h-[68px] px-4 flex items-center justify-between border-b border-white/10 overflow-hidden"><div className="flex items-center gap-2.5"><Logo size={46} />{!collapsed && <div className="leading-tight"><div className="font-display text-base font-bold text-white">Ticketing</div><div className="text-[10px] uppercase tracking-widest text-white/60">Admin Console</div></div>}</div><button className="lg:hidden" onClick={() => setMobileNav(false)} aria-label="Close menu"><Icon name="x" /></button></div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 no-scrollbar">
           {GROUPS.filter(([, keys]) => visible.some(([k]) => keys.includes(k))).map(([g, keys]) => (
@@ -77,7 +79,7 @@ function AdminConsole() {
         <button onClick={() => setCollapsed(!collapsed)} className="hidden lg:flex items-center gap-2 m-3 rounded-xl px-3 py-2 text-xs text-white/60 hover:bg-white/10"><Icon name={collapsed ? "right" : "left"} size={16} />{!collapsed && "Collapse"}</button>
       </aside>
       <div className="flex-1 min-w-0">
-        <header className="sticky top-11 z-30 h-[68px] glass border-b border-black/5 flex items-center gap-3 px-4 sm:px-6">
+        <header className="sticky top-0 z-30 h-[68px] glass border-b border-black/5 flex items-center gap-3 px-4 sm:px-6">
           <button className="lg:hidden h-10 w-10 grid place-items-center rounded-xl hover:bg-slate-100" onClick={() => setMobileNav(true)} aria-label="Open menu"><Icon name="menu" /></button>
           <div className="flex-1 min-w-0"><h1 className="font-display text-lg sm:text-xl font-bold text-navy-950 line-clamp-2 sm:truncate leading-tight">{title}</h1><div className="hidden sm:block text-xs text-slate-500 truncate">{desc[mod]}</div></div>
           <Badge tone="amber" className="max-sm:hidden">Simulated payments</Badge>
@@ -85,7 +87,7 @@ function AdminConsole() {
           <div className="flex items-center gap-2 pl-3 border-l border-slate-200"><div className="h-9 w-9 rounded-full bg-mgm-yellow grid place-items-center font-bold text-navy-950">{me!.name.split(" ").map((x) => x[0]).join("").slice(0, 2)}</div><div className="hidden sm:block leading-tight"><div className="text-sm font-semibold text-navy-950">{me!.name}</div><div className="text-[11px] text-slate-500">{me!.roles.join(", ")}</div></div><button title="Sign out" aria-label="Sign out" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-slate-100 text-slate-500" onClick={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); }}><Icon name="logout" size={17} /></button></div>
         </header>
         <main className="p-4 sm:p-6 step-fwd" key={mod}>
-          {visible.length === 0 && <Empty text="This account has no admin console access. Gate staff use the Staff Scanner." />}
+          {visible.length === 0 && <Empty text="This account has no admin console access. Gate staff use the Staff Scanner at /staff; counter staff use /counter." />}
           {allowed && mod === "dashboard" && <Dashboard go={setMod} />}
           {allowed && mod === "calendar" && <CalendarMgmt />}
           {allowed && mod === "tickets" && <TicketMgmt />}
@@ -99,7 +101,6 @@ function AdminConsole() {
           {allowed && mod === "settings" && <SettingsPage />}
           {allowed && mod === "regions" && <RegionalAnalytics />}
           {allowed && mod === "influencers" && <InfluencerModule />}
-          {allowed && mod === "counter" && <CounterSale />}
           {allowed && mod === "notifications" && <NotificationsPage />}
           {allowed && mod === "audit" && <ActivityLog />}
         </main>

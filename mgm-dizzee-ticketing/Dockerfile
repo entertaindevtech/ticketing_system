@@ -3,7 +3,7 @@ FROM node:22-slim AS web
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY index.html staff.html tsconfig.json vite.config.ts ./
+COPY index.html admin.html counter.html staff.html tsconfig.json vite.config.ts ./
 COPY public ./public
 COPY src ./src
 RUN npm run build
