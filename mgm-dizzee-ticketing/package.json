@@ -12,6 +12,7 @@
     "pricing:fixture": "node scripts/pricing-fixture.ts"
   },
   "dependencies": {
+    "barcode-detector": "3.2.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -129,7 +129,7 @@ function RegionalDashboard({ call }: { call: Call }) {
           <Kpi label="Unknown-location bookings" value={num(data.summary.unknown_location_bookings)} icon="alert" tone="amber" sub="No session or unresolved IP" />
           <Kpi label="Cancelled / refunded" value={num(data.summary.bookings - data.summary.paid_bookings)} icon="refresh" tone="red" sub="Excluded from paid figures" />
         </div>
-        <div className="grid lg:grid-cols-[1fr_360px] gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-5">
           <Card className="min-w-0" title="Acquisition channels" action={<ExportButton onClick={() => downloadCsv(csvName("acquisition-channels", from, to, TODAY), ["Channel", ...FUNNEL_HEADERS],
             data.sources.map((r) => [SOURCE_LABEL[r.source] || r.source, ...funnelCells(r)]))} />}>
             <FunnelTable first="Channel" rows={data.sources.map((r) => ({ ...r, key: r.source, label: SOURCE_LABEL[r.source] || r.source }))} />
@@ -138,7 +138,7 @@ function RegionalDashboard({ call }: { call: Call }) {
             {data.summary.revenue ? <HBars data={data.sources.filter((r) => r.revenue > 0).map((r) => ({ label: SOURCE_LABEL[r.source] || r.source, value: r.revenue, sub: `${num(r.paid_bookings)} paid bookings` }))} fmt={inr} /> : <Empty text="No paid website bookings in this period." />}
           </Card>
         </div>
-        <Card title="Regional traffic → booking funnel" action={<div className="flex items-center gap-2"><ExportButton onClick={() => downloadCsv(csvName("regional-sales", from, to, TODAY), ["Level", "Country", "State / region", "City", ...FUNNEL_HEADERS], [
+        <Card title="Regional traffic → booking funnel" action={<div className="flex flex-wrap items-center gap-2"><ExportButton onClick={() => downloadCsv(csvName("regional-sales", from, to, TODAY), ["Level", "Country", "State / region", "City", ...FUNNEL_HEADERS], [
           ...data.countries.map((r) => ["Country", r.country, "", "", ...funnelCells(r)]),
           ...data.states.map((r) => ["State", "", r.state, "", ...funnelCells(r)]),
           ...data.cities.map((r) => ["City", "", r.state, r.city, ...funnelCells(r)])])} /><div className="w-40"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Region level" options={[{ value: "state", label: "By state" }, { value: "city", label: "By city" }, { value: "country", label: "By country" }]} /></div></div>}>
@@ -221,7 +221,7 @@ function Overview({ call }: { call: Call }) {
           </Card>
         </div>
 
-        <Card title="Influencers by region" action={<div className="flex gap-2"><div className="w-44"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Breakdown" options={[{ value: "state", label: "Influencer × state" }, { value: "city", label: "Influencer × city" }, { value: "campaign", label: "Campaign × state" }]} /></div><div className="w-44"><Select value={stateSel} onChange={setStateSel} ariaLabel="State" options={[{ value: "all", label: "All regions" }, ...data.regions.states.map((s) => ({ value: s.state, label: s.state }))]} /></div></div>}>
+        <Card title="Influencers by region" action={<div className="flex flex-wrap gap-2"><div className="w-44"><Select value={level} onChange={(v) => setLevel(v as typeof level)} ariaLabel="Breakdown" options={[{ value: "state", label: "Influencer × state" }, { value: "city", label: "Influencer × city" }, { value: "campaign", label: "Campaign × state" }]} /></div><div className="w-44"><Select value={stateSel} onChange={setStateSel} ariaLabel="State" options={[{ value: "all", label: "All regions" }, ...data.regions.states.map((s) => ({ value: s.state, label: s.state }))]} /></div></div>}>
           {(() => {
             const rows = (level === "state" ? data.regions.state_influencers : level === "city" ? data.regions.city_influencers : data.regions.campaign_states).filter((r) => stateSel === "all" || r.state === stateSel) as (Region & { state: string; influencer: string; city?: string; campaign?: string })[];
             return rows.length ? <div className="overflow-x-auto -mx-5"><table className="w-full"><thead className="bg-slate-50"><tr>{level === "city" && <Th>City</Th>}<Th>State / region</Th><Th>Influencer</Th>{level === "campaign" && <Th>Campaign</Th>}<Th className="text-right">Paid bookings</Th><Th className="text-right">Tickets</Th><Th className="text-right">Revenue</Th></tr></thead>

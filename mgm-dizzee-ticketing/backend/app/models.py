@@ -298,6 +298,8 @@ class Ticket(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     used_gate: Mapped[str | None] = mapped_column(String(60))
     used_by: Mapped[str | None] = mapped_column(String(32))
+    # The group admission that used this ticket; NULL for single-ticket scans and tickets used before group admission.
+    admission_id: Mapped[int | None] = mapped_column(ForeignKey("gate_admissions.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (
         CheckConstraint("status IN ('issued','used','void')", name="ck_ticket_status"),
@@ -460,6 +462,44 @@ class GateScan(Base):
         CheckConstraint("result IN ('valid','duplicate','invalid')", name="ck_scan_result"),
         Index("uq_scan_client_id", "device_id", "client_scan_id", unique=True),
     )
+
+
+class GateAdmission(Base):
+    """One group-admission transaction at a gate (Model A: one booking QR, several admissions), or a supervisor's
+    correction of one. Rows are never updated or deleted: a correction is a new row pointing at the admission it
+    reverses. (device_id, client_txn_id) makes a scanner's network retry return the original result."""
+    __tablename__ = "gate_admissions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)  # ADM-XXXXXXXX
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)  # admit | correction
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), nullable=False, index=True)
+    booking_ref: Mapped[str] = mapped_column(String(16), nullable=False)
+    gate: Mapped[str] = mapped_column(String(60), nullable=False)
+    staff_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)  # people admitted (or un-admitted by a correction)
+    corrects_id: Mapped[int | None] = mapped_column(ForeignKey("gate_admissions.id"))
+    reason: Mapped[str | None] = mapped_column(String(255))
+    device_id: Mapped[str | None] = mapped_column(String(64))
+    client_txn_id: Mapped[str | None] = mapped_column(String(64))
+    lines: Mapped[list["GateAdmissionLine"]] = relationship(order_by="GateAdmissionLine.id", lazy="selectin")
+    __table_args__ = (
+        CheckConstraint("kind IN ('admit','correction')", name="ck_admission_kind"),
+        CheckConstraint("quantity > 0", name="ck_admission_quantity"),
+        CheckConstraint("kind = 'admit' OR (corrects_id IS NOT NULL AND reason IS NOT NULL)", name="ck_admission_correction"),
+        Index("uq_admission_client_txn", "device_id", "client_txn_id", unique=True),
+    )
+
+
+class GateAdmissionLine(Base):
+    """People admitted per ticket category in one admission transaction."""
+    __tablename__ = "gate_admission_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admission_id: Mapped[int] = mapped_column(ForeignKey("gate_admissions.id"), nullable=False, index=True)
+    category_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (CheckConstraint("quantity > 0", name="ck_admission_line_quantity"),)
 
 
 # ---------- staff accounts (milestone E) ----------

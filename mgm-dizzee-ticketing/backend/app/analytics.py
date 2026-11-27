@@ -42,15 +42,28 @@ def _rate(n: int, d: int) -> float:
     return round(100.0 * n / d, 1) if d else 0.0
 
 
+def _attributed_sessions(db: Session, lo, hi, inf_filter, key) -> dict:
+    """Visitor sessions an influencer's link attributed in the period, by key(influencer_id, campaign). A session that
+    switched to another influencer still counts for each one that held it (dated by the click), so switching never
+    removes a session from an earlier influencer's figures. Sessions attributed before clicks were logged count by
+    the session's own attribution."""
+    out: dict = defaultdict(set)
+    for inf, camp, sid in db.execute(select(ReferralClick.influencer_id, ReferralClick.campaign, ReferralClick.session_id).distinct().where(
+            ReferralClick.kept_existing_attribution.is_(False), *_within(ReferralClick.created_at, lo, hi), *inf_filter(ReferralClick.influencer_id))):
+        out[key(inf, camp)].add(sid)
+    for inf, camp, sid in db.execute(select(VS.influencer_id, VS.campaign, VS.id).where(
+            VS.influencer_id.is_not(None), *_within(VS.attributed_at, lo, hi), *inf_filter(VS.influencer_id))):
+        out[key(inf, camp)].add(sid)
+    return out
+
+
 def compute(db: Session, start: date | None = None, end: date | None = None, influencer_id: int | None = None) -> dict:
     lo, hi = _range(start, end)
     inf_filter = lambda col: [col == influencer_id] if influencer_id else []  # noqa: E731
 
     clicks = dict(db.execute(select(ReferralClick.influencer_id, func.count()).where(
         *_within(ReferralClick.created_at, lo, hi), *inf_filter(ReferralClick.influencer_id)).group_by(ReferralClick.influencer_id)).all())
-    # an influencer's sessions = visitor sessions that received its attribution, dated by attribution time
-    sessions = dict(db.execute(select(VS.influencer_id, func.count()).where(VS.influencer_id.is_not(None),
-        *_within(VS.attributed_at, lo, hi), *inf_filter(VS.influencer_id)).group_by(VS.influencer_id)).all())
+    sessions = {k: len(v) for k, v in _attributed_sessions(db, lo, hi, inf_filter, lambda inf, camp: inf).items()}
 
     paid = BA.status == "paid"
     live_comm = IC.status != "reversed"
@@ -66,7 +79,7 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
         func.coalesce(func.sum(case((IC.status == "approved", IC.amount), else_=0)), 0),
         func.coalesce(func.sum(case((IC.status == "paid", IC.amount), else_=0)), 0),
         func.coalesce(func.sum(case((IC.status == "reversed", IC.amount), else_=0)), 0),
-    ).join(IC, IC.booking_attribution_id == BA.id).where(*ba_where).group_by(BA.influencer_id)).all()
+    ).outerjoin(IC, IC.booking_attribution_id == BA.id).where(*ba_where).group_by(BA.influencer_id)).all()
     by_inf = {r[0]: r[1:] for r in booking_rows}
 
     infl_q = select(Influencer).order_by(Influencer.name)
@@ -125,14 +138,13 @@ def compute(db: Session, start: date | None = None, end: date | None = None, inf
     for inf_id, c, n in db.execute(select(ReferralClick.influencer_id, ReferralClick.campaign, func.count()).where(
             *_within(ReferralClick.created_at, lo, hi), *inf_filter(ReferralClick.influencer_id)).group_by(ReferralClick.influencer_id, ReferralClick.campaign)):
         camp[(inf_id, c)]["clicks"] = n
-    for inf_id, c, n in db.execute(select(VS.influencer_id, VS.campaign, func.count()).where(VS.influencer_id.is_not(None),
-            *_within(VS.attributed_at, lo, hi), *inf_filter(VS.influencer_id)).group_by(VS.influencer_id, VS.campaign)):
-        camp[(inf_id, c)]["sessions"] = n
+    for key, sids in _attributed_sessions(db, lo, hi, inf_filter, lambda inf, camp: (inf, camp)).items():
+        camp[key]["sessions"] = len(sids)
     for inf_id, c, n, n_paid, t, rev, com in db.execute(select(
             BA.influencer_id, BA.campaign, func.count(BA.id), func.sum(case((paid, 1), else_=0)),
             func.sum(case((paid, BA.tickets), else_=0)), func.sum(case((paid, BA.total_amount), else_=0)),
             func.sum(case((live_comm, IC.amount), else_=0)),
-    ).join(IC, IC.booking_attribution_id == BA.id).where(*ba_where).group_by(BA.influencer_id, BA.campaign)):
+    ).outerjoin(IC, IC.booking_attribution_id == BA.id).where(*ba_where).group_by(BA.influencer_id, BA.campaign)):
         camp[(inf_id, c)].update(attributed_bookings=n, paid_bookings=int(n_paid or 0), tickets=int(t or 0), revenue=Decimal(rev or 0), commission=Decimal(com or 0))
     campaigns = sorted([{
         "influencer_id": k[0], "influencer": names.get(k[0], "?"), "campaign": k[1] or "(none)", **{x: v[x] for x in ("clicks", "sessions", "attributed_bookings", "paid_bookings", "tickets")},
@@ -159,8 +171,9 @@ def compute_regional(db: Session, start: date | None = None, end: date | None = 
     lo, hi = _range(start, end)
     paid = BA.status == "paid"
     # Channel = recorded influencer attribution first (the same fact commissions and Influencer Performance use),
-    # otherwise the first-touch source. A booking from an influencer-link visit that earned no commission (e.g. the
-    # per-session cap) is reported as influencer_uncredited, so the influencer channel equals attributed bookings.
+    # otherwise the first-touch source. A booking from an influencer-link session that is not attributed (e.g. its
+    # referral had expired) is reported as influencer_uncredited, so the influencer channel equals attributed bookings.
+    # Bookings over the per-session commission cap stay attributed (influencer channel), just without commission.
     s_chan = case((VS.influencer_id.is_not(None), "influencer"), else_=VS.source)
     b_chan = case((BA.influencer_id.is_not(None), "influencer"), (BA.source == "influencer", "influencer_uncredited"), else_=BA.source)
     sess_rows = db.execute(select(s_chan, VS.geo_country_code, VS.geo_country, VS.geo_region, VS.geo_city, func.count())

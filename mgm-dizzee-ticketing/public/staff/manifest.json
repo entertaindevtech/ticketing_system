@@ -1,0 +1,17 @@
+{
+  "id": "/staff.html",
+  "name": "MGM Gate Scanner",
+  "short_name": "MGM Gate",
+  "description": "Ticket scanner for MGM Dizzee World gate staff.",
+  "start_url": "/staff.html",
+  "scope": "/staff",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#1C1B19",
+  "background_color": "#1C1B19",
+  "icons": [
+    { "src": "/staff/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/staff/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/staff/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

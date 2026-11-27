@@ -48,7 +48,9 @@ def test_click_records_session_and_geo_snapshot(client, db, app):
     assert app.state.geo.calls == ["49.36.10.10"]
 
 
-def test_first_click_wins_within_window(client, db):
+def test_first_click_model_keeps_the_first_live_influencer_when_configured(app, client, db):
+    from dataclasses import replace
+    app.state.settings = replace(app.state.settings, attribution_model="first_click")  # opt-in; last_click is the default
     make_influencer(client, code="AAA111")
     make_influencer(client, code="BBB222", name="Second")
     tok = click(client, code="AAA111").json()["session_token"]
@@ -76,6 +78,8 @@ def test_expired_attribution_is_replaced_and_not_paid_out(client, db):
     s = db.scalar(select(VisitorSession).where(VisitorSession.token == tok))
     s.created_at = s.attributed_at = utcnow() - timedelta(days=31)
     s.expires_at = s.attribution_expires_at = utcnow() - timedelta(days=1)
+    for c in db.scalars(select(ReferralClick)):  # the click happened 31 days ago too
+        c.created_at = utcnow() - timedelta(days=31)
     db.commit()
     r = pay(client, "MGM-OLD001", tok).json()
     assert r["attributed"] is False and r["recorded"] is True  # past the 30-day window: sale counted, no commission
@@ -269,9 +273,9 @@ def test_analytics_aggregation(client):
     assert a["regions"]["cities"][0]["city"] == "Chennai"
     camp = {(c["influencer"], c["campaign"]): c for c in a["campaigns"]}
     summer, untagged = camp[("Rahul Sharma", "summer2026")], camp[("Rahul Sharma", "(none)")]
-    assert (summer["clicks"], summer["sessions"], summer["paid_bookings"], summer["revenue"]) == (1, 1, 1, 3005)
-    # the untagged repeat visit counts as an untagged click; the booking stays with the session's campaign
-    assert (untagged["clicks"], untagged["attributed_bookings"], untagged["paid_bookings"]) == (2, 1, 0)
+    # last click wins, campaign included: the untagged repeat visit became the active referral before booking
+    assert (summer["clicks"], summer["sessions"], summer["paid_bookings"], summer["revenue"]) == (1, 1, 0, 0)
+    assert (untagged["clicks"], untagged["sessions"], untagged["attributed_bookings"], untagged["paid_bookings"], untagged["revenue"]) == (2, 2, 2, 1, 3005)
 
     one = client.get(f"/api/admin/analytics?influencer_id={by['BBB222']['id']}", headers=ADMIN).json()
     assert len(one["influencers"]) == 1 and one["summary"]["clicks"] == 1
@@ -306,5 +310,7 @@ def test_one_session_cannot_be_replayed_for_unlimited_bookings(client, db):
     make_influencer(client)
     tok = click(client).json()["session_token"]
     results = [pay(client, f"MGM-CAP{i:03d}", tok).json()["attributed"] for i in range(7)]
-    assert results == [True] * 5 + [False] * 2
-    assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 5
+    assert results == [True] * 7  # every paid booking stays attributed to the influencer...
+    assert db.scalar(select(func.count()).select_from(InfluencerCommission)) == 5  # ...but only five earn commission
+    perf = client.get("/api/admin/analytics", headers=ADMIN).json()["influencers"][0]
+    assert perf["paid_bookings"] == 7 and perf["commission_earned"] == float(sum(c.amount for c in db.scalars(select(InfluencerCommission))))

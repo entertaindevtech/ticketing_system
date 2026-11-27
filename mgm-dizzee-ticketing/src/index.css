@@ -109,4 +109,8 @@ input[type=checkbox], input[type=radio] { accent-color: #1C1B19; width: 16px; he
 .btn-shine::after { content: ""; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.45) 50%, transparent 70%); background-size: 200% 100%; animation: shimmer 2.8s ease-in-out infinite; pointer-events: none; }
 button, a { transition-property: color, background-color, border-color, box-shadow, transform, opacity; transition-duration: .2s; }
 
+/* Full-height screens below the prototype's 44px app switcher; the standalone staff app (staff.html) sets --app-bar: 0px. */
+.staff-h { min-height: calc(100vh - var(--app-bar, 44px)); min-height: calc(100dvh - var(--app-bar, 44px)); }
+.safe-pad { padding-top: max(2rem, env(safe-area-inset-top)); padding-bottom: max(2rem, env(safe-area-inset-bottom)); }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } .reveal { opacity: 1; transform: none; } }

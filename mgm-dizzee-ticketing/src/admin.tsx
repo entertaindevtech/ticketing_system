@@ -30,7 +30,7 @@ const MODULE_ROLES: Record<Mod, string[]> = {
 
 export default function AdminApp() {
   const { me } = useStore();
-  if (!me) return <div className="min-h-[calc(100vh-44px)] bg-slate-200/60 flex justify-center"><div className="w-full max-w-md"><StaffLogin title="Admin Console" subtitle="Sign in with your MGM staff account." /></div></div>;
+  if (!me) return <div className="staff-h bg-slate-200/60 flex justify-center"><div className="w-full max-w-md"><StaffLogin title="Admin Console" subtitle="Sign in with your MGM staff account." /></div></div>;
   return <AdminConsole />;
 }
 
@@ -58,7 +58,7 @@ function AdminConsole() {
   return (
     <div className="min-h-screen bg-[#F4F3EF] flex">
       {mobileNav && <div className="fixed inset-0 z-40 bg-navy-950/50 lg:hidden" onClick={() => setMobileNav(false)} />}
-      <aside className={`fixed lg:sticky top-11 z-50 lg:z-10 h-[calc(100vh-44px)] bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 lg:left-0"}`}>
+      <aside className={`fixed lg:sticky top-11 z-50 lg:z-10 h-[calc(100dvh-44px)] bg-mgm-green text-white flex flex-col transition-all ${collapsed ? "lg:w-[76px]" : "lg:w-64"} w-64 ${mobileNav ? "left-0" : "-left-64 max-lg:invisible lg:left-0"}`}>
         <div className="h-[68px] px-4 flex items-center justify-between border-b border-white/10 overflow-hidden"><div className="flex items-center gap-2.5"><Logo size={46} />{!collapsed && <div className="leading-tight"><div className="font-display text-base font-bold text-white">Ticketing</div><div className="text-[10px] uppercase tracking-widest text-white/60">Admin Console</div></div>}</div><button className="lg:hidden" onClick={() => setMobileNav(false)} aria-label="Close menu"><Icon name="x" /></button></div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 no-scrollbar">
           {GROUPS.filter(([, keys]) => visible.some(([k]) => keys.includes(k))).map(([g, keys]) => (
@@ -79,8 +79,8 @@ function AdminConsole() {
       <div className="flex-1 min-w-0">
         <header className="sticky top-11 z-30 h-[68px] glass border-b border-black/5 flex items-center gap-3 px-4 sm:px-6">
           <button className="lg:hidden h-10 w-10 grid place-items-center rounded-xl hover:bg-slate-100" onClick={() => setMobileNav(true)} aria-label="Open menu"><Icon name="menu" /></button>
-          <div className="flex-1 min-w-0"><h1 className="font-display text-xl font-bold text-navy-950 truncate leading-tight">{title}</h1><div className="text-xs text-slate-500 truncate">{desc[mod]}</div></div>
-          <Badge tone="amber" className="hidden sm:inline-flex">Simulated payments</Badge>
+          <div className="flex-1 min-w-0"><h1 className="font-display text-lg sm:text-xl font-bold text-navy-950 line-clamp-2 sm:truncate leading-tight">{title}</h1><div className="hidden sm:block text-xs text-slate-500 truncate">{desc[mod]}</div></div>
+          <Badge tone="amber" className="max-sm:hidden">Simulated payments</Badge>
           <div className="hidden md:flex items-center gap-2 text-xs text-slate-500"><Icon name="calendar" size={15} />Today: {fmtDate(TODAY)}</div>
           <div className="flex items-center gap-2 pl-3 border-l border-slate-200"><div className="h-9 w-9 rounded-full bg-mgm-yellow grid place-items-center font-bold text-navy-950">{me!.name.split(" ").map((x) => x[0]).join("").slice(0, 2)}</div><div className="hidden sm:block leading-tight"><div className="text-sm font-semibold text-navy-950">{me!.name}</div><div className="text-[11px] text-slate-500">{me!.roles.join(", ")}</div></div><button title="Sign out" aria-label="Sign out" className="h-9 w-9 grid place-items-center rounded-lg hover:bg-slate-100 text-slate-500" onClick={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); }}><Icon name="logout" size={17} /></button></div>
         </header>
@@ -111,7 +111,7 @@ function AdminConsole() {
 // ---------- shared ----------
 export const Card = ({ title, action, children, className = "" }: { title?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; className?: string }) => (
   <section className={`card-flat ${className}`}>
-    {title && <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-2"><h3 className="font-bold text-navy-950">{title}</h3>{action}</div>}
+    {title && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 pt-4 pb-2"><h3 className="font-bold text-navy-950">{title}</h3>{action}</div>}
     <div className={title ? "px-5 pb-5" : "p-5"}>{children}</div>
   </section>
 );
@@ -119,7 +119,7 @@ export function Kpi({ label, value, icon, sub, tone = "navy" }: { label: string;
   const t: Record<string, string> = { navy: "bg-slate-100 text-navy-950", yellow: "bg-mgm-yellow/30 text-navy-950", red: "bg-red-50 text-mgm-red", green: "bg-emerald-50 text-emerald-700", sky: "bg-slate-100 text-navy-950", amber: "bg-amber-50 text-amber-700" };
   return (
     <div className="card-flat p-4 lift">
-      <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-500 truncate">{label}</span><span className={`grid h-8 w-8 place-items-center rounded-lg ${t[tone]}`}><Icon name={icon} size={16} /></span></div>
+      <div className="flex items-start justify-between gap-2"><span className="min-w-0 text-xs font-semibold text-slate-500 leading-snug break-words">{label}</span><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${t[tone]}`}><Icon name={icon} size={16} /></span></div>
       <div className="mt-2 font-display text-[26px] leading-none font-bold text-navy-950 tabular-nums"><CountUp value={value} /></div>
       {sub && <div className="mt-1.5 text-[11px] text-slate-500">{sub}</div>}
     </div>
@@ -430,7 +430,7 @@ function OfferForm({ offer, onClose }: { offer: Offer; onClose: () => void }) {
   return (
     <Modal open wide onClose={onClose} title={isNew ? "Create offer" : `Edit · ${offer.name}`}
       footer={<>{err && <span className="mr-auto self-center text-sm font-medium text-red-600">{err}</span>}<Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant="outline" onClick={() => save("draft")}>Save as draft</Button>{!isNew && o.status !== "draft" && <Button variant="dark" onClick={() => save()}>Save changes</Button>}<Button onClick={() => save("active")} icon="zap">Publish offer</Button></>}>
-      <div className="grid lg:grid-cols-[1fr_280px] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-6">
         <div className="space-y-5">
           <FormSection title="Basics">
             <div className="grid sm:grid-cols-2 gap-3">
@@ -704,7 +704,7 @@ function PaymentMgmt() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 stagger"><Kpi label="Captured" value={inr(sum("paid"))} icon="checkCircle" tone="green" /><Kpi label="Pending" value={inr(sum("pending"))} icon="clock" tone="amber" /><Kpi label="Failed" value={inr(sum("failed"))} icon="xCircle" tone="red" /><Kpi label="Refunded" value={inr(db.bookings.reduce((a, b) => a + (isRefunded(b) ? b.refund!.amount : 0), 0))} icon="refresh" tone="sky" sub="Approved refunds only" /></div>
       <RefundRequests />
       <Settlements />
-      <div className="grid lg:grid-cols-[1fr_320px] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
         <div className="card-flat overflow-hidden">
           <div className="p-3 flex gap-1.5 flex-wrap">{["all", "paid", "pending", "failed", "refunded"].map((s) => <button key={s} onClick={() => setSt(s)} className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize ${st === s ? "bg-navy-950 text-white" : "bg-slate-100 text-slate-600"}`}>{s}</button>)}</div>
           <div className="overflow-x-auto max-h-[560px]"><table className="w-full"><thead className="bg-slate-50 sticky top-0"><tr><Th>Transaction ID</Th><Th>Booking</Th><Th>Gateway</Th><Th>Method</Th><Th>Amount</Th><Th>Status</Th><Th>Date</Th><Th>Refund</Th></tr></thead>

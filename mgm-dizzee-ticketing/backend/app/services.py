@@ -13,7 +13,7 @@ from .config import Settings
 from .acquisition import classify, referrer_host
 from .geo import GeoLookup
 from .models import (
-    BookingAttribution, CommissionEvent, Influencer, InfluencerCommission, ReferralClick, VisitorSession, as_utc, utcnow,
+    Booking, BookingAttribution, CommissionEvent, Influencer, InfluencerCommission, ReferralClick, VisitorSession, as_utc, utcnow,
 )
 
 CODE_RE = re.compile(r"^[A-Z0-9_-]{3,32}$")
@@ -98,6 +98,20 @@ def record_visit(db: Session, cfg: Settings, geo: GeoLookup, *, existing_token: 
     return VisitResult(session=session, created=created, kept_existing=kept)
 
 
+def active_referral(db: Session, session: VisitorSession, at: datetime) -> tuple[int | None, str | None, datetime | None]:
+    """(influencer_id, campaign, since) of the referral this session had at time `at`: the latest click that set the
+    session's attribution (kept_existing_attribution false) at or before `at`. Every click is logged, so this is
+    exact for any past moment; sessions attributed before clicks were logged fall back to the session's own fields."""
+    clicks = db.scalars(select(ReferralClick).where(ReferralClick.session_id == session.id,
+                                                    ReferralClick.kept_existing_attribution.is_(False))).all()
+    best = max((c for c in clicks if as_utc(c.created_at) <= at), key=lambda c: (as_utc(c.created_at), c.id), default=None)
+    if best:
+        return best.influencer_id, best.campaign, as_utc(best.created_at)
+    if not clicks and session.influencer_id and session.attributed_at and as_utc(session.attributed_at) <= at:
+        return session.influencer_id, session.campaign, as_utc(session.attributed_at)
+    return None, None, None
+
+
 @dataclass
 class BookingAmounts:
     tickets: int
@@ -134,9 +148,10 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
                     channel: str = "web", commit: bool = True) -> BookingAttribution | None:
     """Record a paid booking with its session's region and source. Idempotent per booking_ref.
 
-    Called by the booking engine inside its payment-capture transaction (commit=False). A commission is created
-    only for website bookings whose session holds a live influencer attribution at payment time; counter sales
-    (channel="counter") are recorded for sales reporting but can never be attributed.
+    Called by the booking engine inside its payment-capture transaction (commit=False). A website booking is
+    attributed to the influencer whose referral was active for its session when the booking was created, if that
+    referral is still within the attribution window at payment; a commission is added while the session is under
+    MAX_BOOKINGS_PER_SESSION commissions. Counter sales (channel="counter") are recorded but never attributed.
     Returns None only for unpaid events."""
     if payment_status != "paid":
         return None
@@ -153,19 +168,26 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
     if paid_at:
         paid = min(max(as_utc(paid_at), as_utc(session.created_at)) if session else as_utc(paid_at), now)
 
-    influencer = None
-    if session and session.influencer_id and as_utc(session.attributed_at) <= paid <= as_utc(session.attribution_expires_at):
-        # A real visitor rarely makes more than a few bookings; cap how far one (possibly leaked) token can earn commission.
-        used = db.scalar(select(func.count()).select_from(BookingAttribution).where(
-            BookingAttribution.session_id == session.id, BookingAttribution.influencer_id.is_not(None)))
-        if used < cfg.max_bookings_per_session:
-            influencer = db.get(Influencer, session.influencer_id)
+    # Attribution is the referral that was active when the booking was *created* (a later referral visit never
+    # re-assigns an existing booking), and it is still recorded once the commission cap is reached.
+    influencer, campaign, commissionable = None, None, False
+    if session:
+        b = db.get(Booking, booking_id) if booking_id else None
+        made = min(as_utc(b.created_at), paid) if b else paid
+        inf_id, campaign, since = active_referral(db, session, made)
+        if inf_id and since <= paid <= since + timedelta(days=cfg.attribution_window_days):
+            influencer = db.get(Influencer, inf_id)
+            # A real visitor rarely makes more than a few bookings; cap how far one (possibly leaked) token can earn commission.
+            used = db.scalar(select(func.count()).select_from(InfluencerCommission).join(
+                BookingAttribution, InfluencerCommission.booking_attribution_id == BookingAttribution.id).where(
+                BookingAttribution.session_id == session.id))
+            commissionable = used < cfg.max_bookings_per_session
 
     snap = {k: getattr(session, k) if session else None for k in
             ("geo_country_code", "geo_country", "geo_region", "geo_city", "utm_source", "utm_medium", "utm_campaign")}
     attr = BookingAttribution(
         booking_ref=booking_ref, influencer_id=influencer.id if influencer else None, session_id=session.id if session else None,
-        campaign=session.campaign if influencer else None, booking_id=booking_id, channel=channel,
+        campaign=campaign if influencer else None, booking_id=booking_id, channel=channel,
         source="counter" if channel == "counter" else session.source if session else "unknown",
         payment_ref=payment_ref, paid_at=paid, visit_date=amounts.visit_date, tickets=amounts.tickets,
         ticket_net_amount=amounts.ticket_net, addons_amount=amounts.addons, tax_amount=amounts.tax,
@@ -179,7 +201,7 @@ def confirm_payment(db: Session, cfg: Settings, booking_ref: str, session_token:
             raise
         db.rollback()
         return db.scalar(select(BookingAttribution).where(BookingAttribution.booking_ref == booking_ref))
-    if not influencer:
+    if not commissionable:
         _done(db, commit)
         return attr
     basis = commission_basis(cfg, amounts)

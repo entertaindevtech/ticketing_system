@@ -108,7 +108,7 @@ Scaling: the engine is safe with several workers or replicas, because all coordi
 | `SIMULATED_PAYMENTS` | – | `1` | Enables the demo payment provider. No money moves. Must be `0` in production until a verified gateway is integrated. With `0`, online checkout returns "Online payment is not available yet". |
 | `DEMO_TODAY` | – | unset | Pins the park's "today" (`YYYY-MM-DD`) for demos and tests. |
 | `ADMIN_API_TOKEN` | – | unset | Break-glass credential acting as admin (header `X-Admin-Token`). A short or placeholder value disables it. |
-| `ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`, `MAX_BOOKINGS_PER_SESSION`, `VISITOR_SESSION_DAYS`, `COMMISSION_BASIS` | – | `first_click`, 30, 5, 30, `ticket_net_ex_gst` | Influencer attribution (influencer handover §9). |
+| `ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`, `MAX_BOOKINGS_PER_SESSION`, `VISITOR_SESSION_DAYS`, `COMMISSION_BASIS` | – | `last_click`, 30, 5, 30, `ticket_net_ex_gst` | Influencer attribution (influencer handover §9). |
 | `GEOIP_DB_PATH`, `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY` | – | `./data/GeoLite2-City.mmdb` | Approximate visitor region. Without them every region shows Unknown. |
 | `TRUSTED_PROXY_HOPS` | – | `1` | `1` = behind Railway's edge: the visitor IP comes from `X-Real-IP` only. `0` = no proxy (local development): the socket peer address is used. |
 | `CORS_ORIGINS` | – | unset | Only if the front-end is served from another origin. Credentials are allowed for the listed origins. |

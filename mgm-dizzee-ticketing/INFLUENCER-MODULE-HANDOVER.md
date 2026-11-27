@@ -152,7 +152,7 @@ These are **not** reported:
 Events go through a small `localStorage` outbox (`src/referral.ts`). It retries after network errors and 5xx responses, so a brief API outage does not lose a sale. If the API is down, booking still works exactly as before.
 
 **Decisions**
-- First-click attribution with a 30-day window. Both are configurable (`ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`); `last_click` is also supported.
+- Last-click attribution with a 30-day window: every valid referral landing (same or another influencer) becomes the active referral for bookings created after it. Each booking keeps the referral that was active when it was created (from the logged clicks), so a later visit never re-assigns an existing booking. A direct visit leaves the active referral in place until its window ends. Both are configurable (`ATTRIBUTION_MODEL`, `ATTRIBUTION_WINDOW_DAYS`); `first_click` (keep the first live influencer) is available as an explicit setting.
 - The referral session token is kept in `localStorage`, not a cookie, so attribution works even if the API is later moved to another origin.
 - Campaigns are a validated tag (`campaign=` parameter, lower-cased, `[a-z0-9_-]`, max 64 characters), not a separate admin-managed table. Any tag an influencer uses is reported automatically, and invalid tags are dropped while the click still counts.
 - Referral codes cannot be edited once created, because shared links must keep resolving. To retire a code, deactivate the influencer.
@@ -303,7 +303,7 @@ The OpenAPI docs are at `/docs` and `/openapi.json`.
 **Integrity checks on booking events** (added in the security review):
 - Amounts must be internally consistent: total = subtotal − discount + tax (±₹1), and discount and add-ons cannot exceed the subtotal.
 - `booking_ref` must match `^[A-Z0-9][A-Z0-9-]{2,39}$`.
-- One referral session can attribute at most `MAX_BOOKINGS_PER_SESSION` bookings (default 5), which limits how far a leaked or replayed token can be abused.
+- One visitor session can earn commission on at most `MAX_BOOKINGS_PER_SESSION` bookings (default 5), which limits how far a leaked or replayed token can be abused. Later bookings stay attributed to the influencer (and appear in Influencer Performance), just without commission.
 - Rejected events return 422. The front-end outbox drops 4xx responses and retries only network errors and 5xx.
 
 ## 9. Environment variables
@@ -318,10 +318,10 @@ See `backend/.env.example`.
 | `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY` | for regions | free GeoLite account |
 | `GEOIP_DB_PATH` | – | default `/data/GeoLite2-City.mmdb` in the Docker image (put the volume at `/data`) |
 | `TRUSTED_PROXY_HOPS` | – | default `1`: behind Railway's edge, read the visitor IP from `X-Real-IP`. `0`: no proxy (local), use the socket peer |
-| `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `first_click` / `30` |
+| `ATTRIBUTION_MODEL` / `ATTRIBUTION_WINDOW_DAYS` | – | `last_click` / `30` |
 | `COMMISSION_BASIS` | – | `ticket_net_ex_gst` (default) or `total_ex_gst` |
 | `BOOKING_EVENTS_TOKEN` | – | set only once events come from a server (§12) |
-| `MAX_BOOKINGS_PER_SESSION` | – | default `5`; influencer-attributed bookings per session beyond this get no commission (they are still recorded) |
+| `MAX_BOOKINGS_PER_SESSION` | – | default `5`; commissioned bookings per visitor session; later bookings stay attributed, without commission |
 | `VISITOR_SESSION_DAYS` | – | default `30`; lifetime of an anonymous visitor session |
 | `CORS_ORIGINS` | – | only if the front-end is served from another origin |
 | `VITE_API_URL` | – | front-end build-time; leave empty for same-origin (default) |

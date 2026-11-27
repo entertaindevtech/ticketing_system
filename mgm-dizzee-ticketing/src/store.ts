@@ -31,6 +31,7 @@ export type Booking = {
   payment: { txnId: string; method: string; status: PayStatus; gateway: string; at: string };
   status: "confirmed" | "cancelled"; tickets: Ticket[]; live?: boolean; refund?: Refund;
   counterSale?: boolean; modifiedAt?: string | null; modifications?: Modification[];
+  entryQr?: string | null; // signed group-entry QR for the whole booking (gate group admission)
   // server state
   state?: "pending_payment" | "confirmed" | "cancelled" | "expired"; channel?: "web" | "counter"; origin?: string; holdExpiresAt?: string | null;
   refunds?: { id: number; amount: number; fee: number; status: string; reason: string | null; createdAt: string; processedAt: string | null; kind: string }[];
