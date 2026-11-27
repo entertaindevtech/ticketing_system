@@ -18,7 +18,7 @@ def test_admin_api_requires_token(client):
 def test_create_influencer_generates_url_and_rejects_duplicate_code(client):
     inf = make_influencer(client, code="rahul01")
     assert inf["referral_code"] == "RAHUL01"
-    assert inf["referral_url"] == "https://book.example.test/?ref=RAHUL01"
+    assert inf["referral_url"] == "https://book.example.test/customer?ref=RAHUL01"
     r = client.post("/api/admin/influencers", json={"name": "Other", "platform": "YouTube", "referral_code": "RAHUL01", "commission_rate": 5}, headers=ADMIN)
     assert r.status_code == 409
     bad = client.post("/api/admin/influencers", json={"name": "Bad", "platform": "YouTube", "referral_code": "a b", "commission_rate": 5}, headers=ADMIN)

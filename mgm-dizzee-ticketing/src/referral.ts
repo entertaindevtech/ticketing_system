@@ -34,7 +34,6 @@ export async function captureVisit() {
   const p = Object.fromEntries(TRACKING.map((k) => [k, url.searchParams.get(k)]));
   const token = visitorToken();
   if (token && !p.ref) return; // returning visitor: session, region and first-touch source already recorded
-  if (/^#(admin|staff)/.test(window.location.hash)) return; // internal admin/gate screens are not website visitors
   if (TRACKING.some((k) => p[k] !== null)) { // clean URL so a refresh or a re-shared link isn't counted again
     TRACKING.forEach((k) => url.searchParams.delete(k));
     window.history.replaceState(null, "", url.pathname + url.search + url.hash);

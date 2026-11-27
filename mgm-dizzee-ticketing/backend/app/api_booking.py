@@ -57,7 +57,7 @@ def access(ref: str, token: str | None, db: Session, s) -> bookings.Booking:
 
 def created_out(db, s, b) -> dict:
     tok = security.access_token(s.app_secret, b.ref)
-    return {"booking": bookings.booking_dto(db, s, b), "accessToken": tok, "accessUrl": f"{s.public_app_url}/#booking/{b.ref}/{tok}"}
+    return {"booking": bookings.booking_dto(db, s, b), "accessToken": tok, "accessUrl": f"{s.public_app_url}/customer#booking/{b.ref}/{tok}"}
 
 
 @booking_api.post("/bookings", status_code=201)

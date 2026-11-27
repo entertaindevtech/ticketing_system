@@ -53,7 +53,7 @@ def test_access_token_required_to_view_or_pay(client, settings):
     assert client.get(f"/api/bookings/{ref}", headers={"X-Booking-Token": "wrong"}).status_code == 404
     assert client.post(f"/api/bookings/{ref}/payments", json={}, headers={"X-Booking-Token": "wrong"}).status_code == 404
     assert client.get(f"/api/bookings/{ref}", headers={"X-Booking-Token": created["accessToken"]}).json()["id"] == ref
-    assert created["accessUrl"] == f"https://book.example.test/#booking/{ref}/{created['accessToken']}"
+    assert created["accessUrl"] == f"https://book.example.test/customer#booking/{ref}/{created['accessToken']}"
 
 
 def test_browser_cannot_confirm_payment_when_simulation_is_off(app, client, db):
