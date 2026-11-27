@@ -901,17 +901,18 @@ function Confirmation({ booking, access, onHome, homeLabel = "Return to homepage
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 mt-6">
         <div>
           {live.entryQr && live.status !== "cancelled" && (
-            <div className="card p-4 sm:p-5 mb-6 flex flex-col sm:flex-row items-center gap-4 sm:gap-5">
-              <div className="rounded-2xl border border-slate-200 p-2 bg-white shrink-0"><QR text={live.entryQr} size={168} /></div>
+            <div className="card p-4 sm:p-5 mb-6 flex flex-col sm:flex-row items-center gap-4 sm:gap-5 ring-2 ring-mgm-yellow">
+              <div className="rounded-2xl border-2 border-mgm-yellow p-2 bg-white shrink-0"><QR text={live.entryQr} size={168} /></div>
               <div className="min-w-0 text-center sm:text-left">
-                <Badge tone="yellow">Group entry</Badge>
-                <h2 className="mt-2 font-display text-xl font-bold text-navy-950">One QR for all {live.tickets.length} {live.tickets.length === 1 ? "entry" : "entries"}</h2>
-                <p className="mt-1 text-sm text-slate-600">Show this at the gate. Staff can let your whole group in at once, or some now and the rest later. The individual ticket QRs below also work.</p>
+                <Badge tone="yellow">Group QR · whole booking</Badge>
+                <h2 className="mt-2 font-display text-xl font-bold text-navy-950">Enter together with one QR</h2>
+                <p className="mt-1 text-sm text-slate-600">Covers all {live.tickets.length} {live.tickets.length === 1 ? "person" : "people"} on this booking. Show it once at the gate; staff confirm how many of you are entering, and anyone still to come can use it later.</p>
                 <div className="mt-2 font-mono text-xs font-bold text-navy-900">{live.id}</div>
               </div>
             </div>
           )}
-          <div className="flex items-center justify-between mb-3"><h2 className="font-display text-xl font-bold text-navy-950">Your e-tickets</h2><span className="text-sm text-slate-500">{live.tickets.length} QR tickets</span></div>
+          <div className="flex items-center justify-between mb-1"><h2 className="font-display text-xl font-bold text-navy-950">Individual tickets</h2><span className="text-sm text-slate-500">{live.tickets.length} QR tickets</span></div>
+          <p className="text-sm text-slate-600 mb-3">Each QR admits one person, so members of your group can arrive separately. Tap a ticket to show it full size.</p>
           <div className="grid sm:grid-cols-2 gap-4 stagger">
             {live.tickets.map((t, i) => (
               <button key={t.id} onClick={() => setView(i)} className="text-left card overflow-hidden flex lift ticket-notch">
@@ -922,7 +923,7 @@ function Confirmation({ booking, access, onHome, homeLabel = "Return to homepage
                   <div className="mt-3 font-mono text-xs font-bold text-navy-900">{t.id}</div>
                   <div className={`mt-1 text-[11px] font-semibold ${t.status === "valid" ? "text-emerald-600" : t.status === "cancelled" ? "text-red-600" : "text-slate-400"}`}>{t.status === "used" ? "Used at " + t.gate : t.status === "cancelled" ? "Cancelled" : "Valid · not scanned"}</div>
                 </div>
-                <div className="border-l-2 border-dashed border-slate-200 p-3 grid place-items-center bg-slate-50"><QR text={t.qr || t.id} size={96} /></div>
+                <div className="border-l-2 border-dashed border-slate-200 p-3 grid place-items-center bg-slate-50"><QR text={t.qr || t.id} size={96} /><span className="mt-1 text-[10px] font-semibold text-slate-500">Admits 1</span></div>
               </button>
             ))}
           </div>

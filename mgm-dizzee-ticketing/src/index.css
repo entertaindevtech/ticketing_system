@@ -114,3 +114,12 @@ button, a { transition-property: color, background-color, border-color, box-shad
 .safe-pad { padding-top: max(2rem, env(safe-area-inset-top)); padding-bottom: max(2rem, env(safe-area-inset-bottom)); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } .reveal { opacity: 1; transform: none; } }
+
+/* Counter receipt print layout: page chrome is hidden with print:hidden on each element; this tidies the receipt itself. */
+@media print {
+  @page { margin: 12mm; }
+  body:has(.print-receipt) { background: #fff; }
+  .print-receipt .text-slate-400 { color: #475569; }  /* ticket ids: darker than on screen so they stay readable on paper */
+  .print-receipt { max-width: none; margin: 0; padding: 0; border: 0; box-shadow: none; animation: none; font-size: 11pt; }
+  .print-receipt, .print-receipt * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

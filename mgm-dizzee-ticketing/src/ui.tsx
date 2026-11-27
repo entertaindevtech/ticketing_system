@@ -132,7 +132,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={store}>
       {children}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 items-center pointer-events-none w-[92vw] max-w-md">
+      <div className="print:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 items-center pointer-events-none w-[92vw] max-w-md">
         {toasts.map((t) => (
           <div key={t.id} className={"toast-in pointer-events-auto flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium shadow-xl w-full " + (t.tone === "err" ? "bg-red-600 text-white" : t.tone === "warn" ? "bg-amber-500 text-navy-950" : "bg-navy-950 text-white")}>
             <Icon name={t.tone === "ok" ? "checkCircle" : "alert"} size={18} className={t.tone === "ok" ? "text-mgm-yellow" : ""} />{t.msg}

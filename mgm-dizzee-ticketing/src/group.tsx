@@ -35,6 +35,8 @@ export function GroupScreen({ code, view: initial, staff, deviceId, sound, onNex
   const txn = useRef(idemKey()); // one id per admission attempt: a retry after a lost response is not a second admission
   const chosen = view.categories.filter((c) => (qty[c.catId] || 0) > 0);
   const total = chosen.reduce((n, c) => n + qty[c.catId], 0);
+  const left = view.totals?.remaining ?? 0; // remaining on the booking before this admission
+  const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
   const refresh = async () => {
     const v = await api<GroupView>("/api/gate/booking", { method: "POST", body: { code } });
@@ -94,13 +96,15 @@ export function GroupScreen({ code, view: initial, staff, deviceId, sound, onNex
         </div>
       ) : (
         <div className="flex-1 px-4 pt-4">
-          <p className="text-sm font-semibold text-slate-600">How many are entering now?</p>
+          <p className="text-sm font-bold text-navy-950">Count the people at the gate now</p>
+          <p className="text-xs text-slate-600">All remaining tickets are pre-selected. Lower the numbers if fewer people are here; the rest stay valid for later.</p>
           <div className="mt-2 space-y-2">
             {view.categories.map((c) => (
-              <div key={c.catId} className="rounded-2xl bg-white p-3 flex items-center gap-3">
+              <div key={c.catId} className={`rounded-2xl bg-white p-3 flex items-center gap-3 border-2 ${(qty[c.catId] || 0) > 0 ? "border-navy-950" : "border-transparent"}`}>
                 <div className="min-w-0 flex-1">
                   <div className="font-bold text-navy-950 truncate">{c.label}</div>
-                  <div className="text-xs text-slate-500">Bought {c.purchased} · In {c.admitted} · <b className={c.remaining ? "text-navy-950" : ""}>Left {c.remaining}</b></div>
+                  <div className="text-xs text-slate-500">Bought {c.purchased} · In {c.admitted} · <b className={c.remaining ? "text-navy-950" : ""}>Left {c.remaining}</b>
+                    {c.remaining > (qty[c.catId] || 0) && (qty[c.catId] || 0) > 0 && <span> · {c.remaining - qty[c.catId]} for later</span>}</div>
                 </div>
                 <Stepper value={qty[c.catId] || 0} max={c.remaining} label={c.label} disabled={phase === "confirm"} onChange={(n) => setQty({ ...qty, [c.catId]: n })} />
               </div>
@@ -111,15 +115,28 @@ export function GroupScreen({ code, view: initial, staff, deviceId, sound, onNex
         </div>
       )}
       <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-2 bg-slate-50 sticky bottom-0">
-        {!view.fullyRedeemed && phase === "select" && <button disabled={!total} onClick={() => { setErr(null); setPhase("confirm"); }} className="w-full h-16 rounded-2xl bg-mgm-yellow text-navy-950 font-display text-xl font-bold disabled:opacity-40">Admit {total} {total === 1 ? "person" : "people"}…</button>}
+        {!view.fullyRedeemed && phase === "select" && (
+          <>
+            <div className="rounded-2xl bg-white border-2 border-navy-950 px-4 py-2.5 flex items-center justify-between gap-3" aria-live="polite">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-500">Entering now</div>
+                <div className="text-sm font-semibold text-navy-950 truncate">{chosen.map((c) => `${qty[c.catId]} × ${c.label}`).join(" · ") || "Nobody selected"}</div>
+              </div>
+              <div className="shrink-0 text-right leading-none"><span className="font-display text-4xl font-extrabold tabular-nums text-navy-950">{total}</span><div className="text-xs text-slate-500 mt-1">of {left} left</div></div>
+            </div>
+            <button disabled={!total} onClick={() => { setErr(null); setPhase("confirm"); }} className="w-full h-16 rounded-2xl bg-mgm-yellow text-navy-950 font-display text-xl font-bold disabled:opacity-40">Review: admit {people(total)}</button>
+          </>
+        )}
         {!view.fullyRedeemed && phase === "confirm" && (
           <div className="rounded-2xl bg-navy-950 text-white p-3">
-            <div className="text-sm text-white/80">Confirm admission</div>
-            <div className="font-bold">{chosen.map((c) => `${qty[c.catId]} × ${c.label}`).join(", ")}</div>
+            <div className="text-sm text-white/80">Check the count before admitting</div>
+            <div className="font-display text-3xl font-extrabold">Admit {people(total)}?</div>
+            <ul className="mt-1 text-base font-semibold">{chosen.map((c) => <li key={c.catId}>{qty[c.catId]} × {c.label}</li>)}</ul>
+            <div className="mt-1 text-sm text-white/80">{left - total > 0 ? `${people(left - total)} will stay on this booking for later` : "Everyone on this booking will be in"}</div>
             <div className="mt-3 grid grid-cols-[1fr_2fr] gap-2">
-              <button disabled={busy} onClick={() => { setPhase("select"); setErr(null); txn.current = idemKey(); }} className="h-14 rounded-xl bg-white/10 font-semibold">Back</button>
+              <button disabled={busy} onClick={() => { setPhase("select"); setErr(null); txn.current = idemKey(); }} className="h-14 rounded-xl bg-white/10 font-semibold">Change numbers</button>
               <button autoFocus disabled={busy} onClick={() => void confirm()} className="h-14 rounded-xl bg-emerald-500 text-navy-950 font-display text-lg font-bold flex items-center justify-center gap-2">
-                {busy ? <><span className="h-5 w-5 rounded-full border-2 border-navy-950/30 border-t-navy-950 animate-spin" />Admitting…</> : err?.retry ? <><Icon name="refresh" />Retry</> : `Confirm ${total}`}
+                {busy ? <><span className="h-5 w-5 rounded-full border-2 border-navy-950/30 border-t-navy-950 animate-spin" />Admitting…</> : err?.retry ? <><Icon name="refresh" />Retry</> : `Confirm: admit ${total}`}
               </button>
             </div>
           </div>
